@@ -15,7 +15,7 @@ const { URL } = require('url');
 const RECALL_URL = process.env.MEMORY_GATEWAY_URL_RECALL || '';
 const SECRET = process.env.MEMORY_GATEWAY_SECRET || '';
 const CLAUDE_MD = '/app/CLAUDE.md';
-const CLIENT_SLUG = 'ashet-olga';
+const CLIENT_SLUG = process.env.CLIENT_SLUG || '';
 const QUERY = 'важные факты, договорённости, последние задачи, незавершённые действия';
 // 20с, не 10 — живой замер (15.07.2026) показал стабильные ~9-10.3с на каждый
 // вызов /recall (эмбеддинг запроса + два похода в RUVDS через океан), 10с давали
@@ -33,6 +33,11 @@ function done() {
 
 if (!RECALL_URL || !SECRET) {
   warn('MEMORY_GATEWAY_URL_RECALL/MEMORY_GATEWAY_SECRET не заданы — запуск без памяти прошлых сессий');
+  done();
+}
+
+if (!CLIENT_SLUG) {
+  warn('CLIENT_SLUG не задан — запуск без памяти прошлых сессий (без slug нельзя безопасно обращаться к memory-gateway)');
   done();
 }
 

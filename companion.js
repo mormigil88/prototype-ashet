@@ -10,6 +10,7 @@
 // контроль, но постфактум, единственный технически доступный вариант в
 // архитектуре Channels.
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
@@ -238,6 +239,228 @@ const server = http.createServer((req, res) => {
       const turns = getTurns(file, since);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, turns }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+    }
+    return;
+  }
+
+  // Админ: посмотреть текущий allowlist + pending (для онбординга: узнать user_id
+  // нового пользователя из pending.<code>, который тот получил при /start).
+  if (url.pathname === '/admin/allowlist' && req.method === 'GET') {
+    try {
+      // Ищем access.json по нескольким правдоподобным путям — раньше я заложил
+      // /plugins/, но в проде у Ашет он лежит в /channels/, надо сканировать.
+      const candidates = [
+        '/data/claude-home/channels/telegram/access.json',
+        '/data/.claude/plugins/telegram/access.json',
+        '/data/.claude/channels/telegram/access.json',
+        '/data/.claude/telegram/access.json',
+        '/data/claude/plugins/telegram/access.json',
+        '/data/claude/channels/telegram/access.json',
+      ];
+      let foundPath = null;
+      for (const p of candidates) {
+        if (fs.existsSync(p)) { foundPath = p; break; }
+      }
+      if (!foundPath) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, access_exists: false, tried: candidates }));
+        return;
+      }
+      const raw = fs.readFileSync(foundPath, 'utf8');
+      const data = JSON.parse(raw);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        path: foundPath,
+        dmPolicy: data.dmPolicy || null,
+        allowFrom: Array.isArray(data.allowFrom) ? data.allowFrom : [],
+        pending: data.pending && typeof data.pending === 'object' ? data.pending : {},
+      }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+    }
+    return;
+  }
+
+  // Админ: добавить user_id в allowlist. По умолчанию закрывает pairing
+  // (dmPolicy → allowlist) и удаляет все pending-записи для этого user_id.
+  // Без SSH/Dashboard — единственный путь добавить оператора в продакшен-бот.
+  if (url.pathname === '/admin/allowlist/add' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const userId = String(payload.user_id || '');
+        if (!userId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'user_id required' }));
+          return;
+        }
+        const candidates = [
+          '/data/claude-home/channels/telegram/access.json',
+          '/data/.claude/plugins/telegram/access.json',
+          '/data/.claude/channels/telegram/access.json',
+          '/data/.claude/telegram/access.json',
+          '/data/claude/plugins/telegram/access.json',
+          '/data/claude/channels/telegram/access.json',
+        ];
+        let accessPath = null;
+        for (const p of candidates) {
+          if (fs.existsSync(p)) { accessPath = p; break; }
+        }
+        if (!accessPath) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'access.json not found', tried: candidates }));
+          return;
+        }
+        const data = JSON.parse(fs.readFileSync(accessPath, 'utf8'));
+
+        if (!Array.isArray(data.allowFrom)) data.allowFrom = [];
+        if (!data.pending || typeof data.pending !== 'object') data.pending = {};
+
+        if (!data.allowFrom.includes(userId)) {
+          data.allowFrom.push(userId);
+        }
+
+        // Чистим все pending-записи для этого user_id. Поле в реальном access.json
+        // называется "senderId" (а не "user_id" — раньше был баг и проверка не
+        // матчилась, из-за чего pending-код оставался и плагин слал pairing-промпт
+        // даже после добавления в allowlist). Также удаляем по chatId на случай
+        // если имя поля когда-то поменяют.
+        for (const code of Object.keys(data.pending)) {
+          const p = data.pending[code];
+          if (!p) continue;
+          if (String(p.senderId) === userId || String(p.user_id) === userId || String(p.chatId) === userId) {
+            delete data.pending[code];
+          }
+        }
+
+        // По умолчанию закрываем pairing → allowlist
+        if (payload.close_pairing !== false) {
+          data.dmPolicy = 'allowlist';
+        }
+
+        // Атомарная запись через временный файл + rename
+        const tmpPath = accessPath + '.tmp';
+        fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+        fs.renameSync(tmpPath, accessPath);
+
+        // Создаём approved/<userId> с chatId — плагин опрашивает эту директорию,
+        // чтобы слать "you're in" и пускать сообщения в Claude-сессию. Без файла
+        // доступ на уровне allowFrom не активируется.
+        const approvedDir = path.join(path.dirname(accessPath), 'approved');
+        try { fs.mkdirSync(approvedDir, { recursive: true }); } catch (e) {}
+        const chatIdFromPending = (() => {
+          for (const code of Object.keys(data.pending)) {
+            const p = data.pending[code];
+            if (p && String(p.senderId) === userId) return p.chatId;
+          }
+          // Если pending нет — попробуем взять chatId из payload, если клиент его передал
+          return payload.chat_id ? String(payload.chat_id) : userId;
+        })();
+        try {
+          fs.writeFileSync(path.join(approvedDir, userId), String(chatIdFromPending));
+        } catch (e) { /* не критично — основная задача (allowFrom+pending) уже сделана */ }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          path: accessPath,
+          approved: path.join(approvedDir, userId),
+          approvedWritten: chatIdFromPending,
+          allowFrom: data.allowFrom,
+          dmPolicy: data.dmPolicy,
+          pending_remaining: Object.keys(data.pending).length,
+        }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: String(e) }));
+      }
+    });
+    return;
+  }
+
+  // Админ: ping-тест — отправляет сообщение в Telegram через bot token, чтобы
+  // проверить что (а) бот жив, (б) chat_id валидный, (в) бот и пользователь
+  // действительно могут общаться. Используется при онбординге: пнул — юзер
+  // ответил — значит access.json подхвачен. body: {chat_id, text}
+  if (url.pathname === '/admin/ping' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const chatId = String(payload.chat_id || '');
+        const text = String(payload.text || 'ping from companion');
+        if (!chatId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'chat_id required' }));
+          return;
+        }
+        const token = process.env.TELEGRAM_BOT_TOKEN || '';
+        if (!token) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'TELEGRAM_BOT_TOKEN not set' }));
+          return;
+        }
+        const url = `https://api.telegram.org/bot${token}/sendMessage`;
+        const tgBody = JSON.stringify({ chat_id: chatId, text });
+        const req2 = https.request(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(tgBody) },
+        }, (r2) => {
+          let d2 = '';
+          r2.on('data', (c) => { d2 += c; });
+          r2.on('end', () => {
+            res.writeHead(r2.statusCode, { 'Content-Type': 'application/json' });
+            res.end(d2);
+          });
+        });
+        req2.on('error', (e) => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: String(e) }));
+        });
+        req2.write(tgBody);
+        req2.end();
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: String(e) }));
+      }
+    });
+    return;
+  }
+
+  // Админ: рекурсивный скан /data/.claude/ чтобы найти где реально лежит access.json
+  // (Telegram-плагин может использовать путь, который я не угадал в candidates).
+  // Защищён COMPANION_SECRET — только для отладки онбординга.
+  if (url.pathname === '/admin/fs' && req.method === 'GET') {
+    try {
+      const base = url.searchParams.get('base') || '/data/.claude';
+      const maxDepth = parseInt(url.searchParams.get('depth') || '3', 10);
+      const out = [];
+      function walk(dir, depth) {
+        if (depth > maxDepth) return;
+        let entries;
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+        catch (e) { return; }
+        for (const ent of entries) {
+          const p = path.join(dir, ent.name);
+          if (ent.isDirectory()) {
+            out.push({ type: 'dir', path: p });
+            walk(p, depth + 1);
+          } else if (ent.isFile()) {
+            out.push({ type: 'file', path: p, size: ent.size || 0 });
+          }
+        }
+      }
+      walk(base, 0);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, base, depth: maxDepth, entries: out }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: String(e) }));

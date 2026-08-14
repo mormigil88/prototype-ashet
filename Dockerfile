@@ -44,6 +44,8 @@ COPY generate_image.js /app/generate_image.js
 COPY generate_video.js /app/generate_video.js
 COPY compose_video.js /app/compose_video.js
 COPY generate_avatar_video.js /app/generate_avatar_video.js
+COPY clone_voice.js /app/clone_voice.js
+COPY create_avatar.js /app/create_avatar.js
 COPY recall_memory.js /app/recall_memory.js
 RUN chown -R node:node /app
 
