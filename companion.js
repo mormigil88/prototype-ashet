@@ -531,13 +531,21 @@ const server = http.createServer((req, res) => {
           res.end(JSON.stringify({ ok: false, error: 'path required' }));
           return;
         }
-        const out = { ok: true, path: target };
+        const out = { ok: true, path: target, pid: process.pid, cwd: process.cwd() };
         try { fs.mkdirSync(path.dirname(target), { recursive: true }); out.mkdirOk = true; }
         catch (e) { out.mkdirError = String(e); out.mkdirCode = e.code; }
         try { fs.writeFileSync(target, content); out.writeOk = true; }
         catch (e) { out.writeError = String(e); out.writeCode = e.code; }
         try { out.readBack = fs.readFileSync(target, 'utf8'); }
         catch (e) { out.readError = String(e); out.readCode = e.code; }
+        // Сразу stat, чтобы проверить что fs видит файл
+        try {
+          const st = fs.statSync(target);
+          out.statOk = true; out.statSize = st.size; out.statIno = st.ino; out.statDev = st.dev;
+        } catch (e) { out.statError = String(e); out.statCode = e.code; }
+        // Листинг родителя
+        try { out.parentListing = fs.readdirSync(path.dirname(target)); }
+        catch (e) { out.parentListingError = String(e); out.parentListingCode = e.code; }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(out));
       } catch (e) {
