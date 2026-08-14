@@ -547,12 +547,6 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-    } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: String(e) }));
-    }
-    return;
-  }
 
   if (url.pathname !== '/status') {
     res.writeHead(404); res.end(); return;
