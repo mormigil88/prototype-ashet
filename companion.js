@@ -468,6 +468,92 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Админ: stat — прямая проверка одного пути через fs.statSync (readdirSync
+  // в /admin/fs молча глотает EACCES, не видно реальной причины пустого листинга).
+  // Также пробует создать файл и сразу его прочитать — для диагностики
+  // approved/<userId>, куда Telegram-плагин пишет маркер "you're in".
+  if (url.pathname === '/admin/stat' && req.method === 'GET') {
+    try {
+      const target = url.searchParams.get('path') || '';
+      if (!target) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'path required' }));
+        return;
+      }
+      const out = { ok: true, path: target };
+      try {
+        const st = fs.statSync(target);
+        out.exists = true;
+        out.isFile = st.isFile();
+        out.isDirectory = st.isDirectory();
+        out.size = st.size;
+        out.mode = st.mode;
+        out.uid = st.uid;
+        out.gid = st.gid;
+        if (st.isFile() && st.size < 1024) {
+          try { out.content = fs.readFileSync(target, 'utf8'); } catch (e) { out.contentError = String(e); }
+        }
+      } catch (e) {
+        out.exists = false;
+        out.statError = String(e);
+        out.statCode = e.code;
+      }
+      // Также листинг родителя — чтобы понять, видим ли мы там вообще файлы
+      const parent = path.dirname(target);
+      try {
+        const list = fs.readdirSync(parent);
+        out.parentListing = list;
+      } catch (e) {
+        out.parentListingError = String(e);
+        out.parentListingCode = e.code;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+    }
+    return;
+  }
+
+  // Админ: touch — пишет маркерный файл по указанному пути и сразу его читает,
+  // возвращая success/failure. Для диагностики approved/<userId>.
+  if (url.pathname === '/admin/touch' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const target = String(payload.path || '');
+        const content = String(payload.content || '');
+        if (!target) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'path required' }));
+          return;
+        }
+        const out = { ok: true, path: target };
+        try { fs.mkdirSync(path.dirname(target), { recursive: true }); out.mkdirOk = true; }
+        catch (e) { out.mkdirError = String(e); out.mkdirCode = e.code; }
+        try { fs.writeFileSync(target, content); out.writeOk = true; }
+        catch (e) { out.writeError = String(e); out.writeCode = e.code; }
+        try { out.readBack = fs.readFileSync(target, 'utf8'); }
+        catch (e) { out.readError = String(e); out.readCode = e.code; }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: String(e) }));
+      }
+    });
+    return;
+  }
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+    }
+    return;
+  }
+
   if (url.pathname !== '/status') {
     res.writeHead(404); res.end(); return;
   }
