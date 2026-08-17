@@ -78,29 +78,240 @@
 
 ## Раздел 3: Передача в Bot #1 — API между ботами
 
-Решение: **REST с JSON через общий neurostaff** (рекомендация из SESSION_PROMPT_OFFLINE §2.3, строка 73). Альтернатива webhook отклонена — REST проще дебажить и мониторить в `super_bot.py`.
+**Решение:** **REST с JSON через общий neurostaff** (рекомендация из `memory/next-session-bot2-buffer-2026-08-15.md` §2.3). Webhook отклонён — REST проще дебажить и мониторить в `super_bot.py`. Альтернативно можно туннелировать через БД (poll-based), но это +1 round-trip.
 
-Контракт (черновик):
+**Базовый URL:** `https://neurostaff-production.up.railway.app` (тот же, что для approval-gateway).
+
+**Auth:** общий секрет в ENV обоих ботов (`INTERNAL_API_SECRET_ASHET_IRINA` или fallback на `PUBLISH_GATEWAY_SECRET_ASHET_IRINA` если секрет общий между двумя).
+
+**Идентификация клиента:** `X-Client-Slug: ashet-irina` header.
+
+---
+
+### 3.0. Загрузка медиа (presigned URL)
+
+Bot #2 НЕ отдаёт base64 Bot #1 — больно для видео. Сначала грузит в общее R2/S3 хранилище.
+
+```http
+POST /upload-media
+Headers:
+  X-Client-Slug: ashet-irina
+  X-Internal-Secret: <shared>
+  Content-Type: multipart/form-data
+Body:
+  file=<binary>
+  kind=image|video
+Response 200:
+  {
+    "ok": true,
+    "file_id": "ashet-irina/2026-08-17/img_abc123.jpg",
+    "url": "https://r2.example.com/ashet-irina/2026-08-17/img_abc123.jpg?signature=...&expires=..."
+  }
+```
+
+**Реализация:** существующий `POST /upload-media` в `neurostaff/publish_gateway.py:_handle_upload_media` уже подходит. Расширить: возвращать `file_id` для последующих `POST /publish_draft`.
+
+**Expiry:** presigned URL действует 24 часа. Drafts старше 24ч с истёкшим URL → перезагрузка.
+
+---
+
+### 3.1. Blackbox-описание (для будущей реализации)
 
 ```http
 POST /internal/publish_draft
 Headers:
   X-Client-Slug: ashet-irina
-  X-Internal-Secret: <shared between bot#1 and bot#2>
+  X-Internal-Secret: <shared>
   Content-Type: application/json
 Body:
   {
+    "draft_id": "<uuid>",                            # генерит Bot #2
     "platform": "instagram" | "telegram_channel" | "telegram_story_personal" | "telegram_story_channel",
-    "content_type": "post" | "story" | "reel",
+    "content_type": "post" | "story" | "reel" | "carousel",
     "media_type": "image" | "video",
-    "media_url": "https://r2.example.com/.../img.png",  // presigned URL, не base64
-    "caption_file_id": "<memory-recall-id>",
+    "media_url": "https://r2.example.com/.../img.png?signature=...",
+    "media_id": "ashet-irina/2026-08-17/img_abc123.jpg",  # для возможного re-upload
+    "caption": "полный текст подписи",                # НЕ через файл — JSON
+    "scheduled_at": null | "2026-08-17T15:00:00+03:00",
+    "trial": false,                                   # если trial=true — публикация с пометкой
+    "share_to_feed": null | true,                     # только для Reels
+    "created_by": "bot-2-prototype-ashet-dev",
+    "source_message_id": "<tg message_id>",           # для трассировки
+    "metadata": {
+      "topic": "...",
+      "hook": "...",
+      "call_to_action": "..."
+    }
+  }
+Response 200:
+  {
+    "ok": true,
     "draft_id": "<uuid>",
-    "created_by": "bot-2-prototype-ashet-dev"
+    "status": "awaiting_approval",
+    "approval_url": "https://t.me/irina_approve_bot?start=approve_<req_id>"
+  }
+Response 4xx:
+  400 — невалидный JSON / отсутствует обязательное поле
+  401 — неверный X-Internal-Secret
+  413 — media_url слишком большой
+  503 — approval-gateway недоступен (Bot #1 retry через 5 сек)
+```
+
+**Ошибки Bot #2 при получении 5xx:** retry 3 раза с exponential backoff (1s, 5s, 25s). Если 503 — Bot #2 говорит Ире «approval-gateway лежит, попробуем позже», не публикует.
+
+---
+
+### 3.2. Статус draft-а (идемпотентный запрос)
+
+```http
+GET /internal/publish_draft/<draft_id>
+Headers:
+  X-Client-Slug: ashet-irina
+  X-Internal-Secret: <shared>
+Response 200:
+  {
+    "ok": true,
+    "draft_id": "<uuid>",
+    "status": "awaiting_approval" | "approved" | "published" | "rejected" | "failed",
+    "publish_request_id": "<int>",  # id в БД publish_requests
+    "created_at": "2026-08-17T12:00:00Z",
+    "approved_at": null | "2026-08-17T12:05:00Z",
+    "published_at": null | "2026-08-17T12:05:30Z",
+    "error": null | "OAuth token expired"
   }
 ```
 
-**Хранение медиа между ботами:** Cloudflare R2 (или любой S3-совместимый) с **presigned URL**. Base64 НЕ используется — не масштабируется для видео (рекомендация SESSION_PROMPT_OFFLINE §2.3).
+**Status flow:** `awaiting_approval` → `approved` (Ира нажала «Опубликовать») → `published` (через Meta/Buffer) → `failed` (если ошибка).
+
+---
+
+### 3.3. Edit (Ира правит draft)
+
+```http
+PATCH /internal/publish_draft/<draft_id>
+Headers:
+  X-Client-Slug: ashet-irina
+  X-Internal-Secret: <shared>
+Body:
+  { "caption": "новый текст" | "media_url": "новый URL" }
+Response 200:
+  { "ok": true, "draft_id": "...", "updated_at": "..." }
+```
+
+**Поведение:** если draft в статусе `awaiting_approval` — обновляет текст/медиа, approval-gateway шлёт Ире **новое** сообщение с кнопками (старое остаётся как история, но неактивно). Если уже `published` — 409 Conflict.
+
+---
+
+### 3.4. Reject (Ира отклонила)
+
+```http
+POST /internal/publish_draft/<draft_id>/reject
+Headers:
+  X-Client-Slug: ashet-irina
+  X-Internal-Secret: <shared>
+Body:
+  { "reason": "холодно, переделай" }  # опционально
+Response 200:
+  { "ok": true, "status": "rejected" }
+```
+
+**Поведение:** Bot #2 получает status=`rejected` через polling (см. 3.2) — если reason есть, можно перегенерировать. Bot #2 НЕ делает автоматический retry — это согласовано в Архитектурном решении 16.08 (см. §4).
+
+---
+
+### 3.5. Notification (Bot #1 → Ира)
+
+```http
+POST /internal/notify_client
+Headers:
+  X-Client-Slug: ashet-irina
+  X-Internal-Secret: <shared>
+Body:
+  {
+    "text": "✅ Опубликовано в Instagram: <short_url>",
+    "reply_to_draft_id": "<uuid>"  # опционально, для трединга
+  }
+Response 200:
+  { "ok": true, "telegram_message_id": 12345 }
+```
+
+**Когда вызывается:** из existing handlers `publish_gateway.py:_notify_client()` — эта функция уже шлёт fallback-сообщения. Новый endpoint — интерфейс для Bot #2 чтобы дёрнуть тот же путь.
+
+---
+
+### 3.6. Хранение в БД (publish_requests)
+
+Одна таблица на всех клиентов (per-VPS), `publish_gateway.py` использует существующую схему:
+
+```sql
+CREATE TABLE publish_requests (
+  id              BIGSERIAL PRIMARY KEY,
+  client_slug     VARCHAR(64) NOT NULL,
+  status          VARCHAR(16) NOT NULL,  -- pending|approved|published|rejected|failed
+  platform        VARCHAR(32),
+  content_type    VARCHAR(16),
+  media_type      VARCHAR(16),
+  media_url       TEXT,
+  media_id        TEXT,
+  caption         TEXT,
+  scheduled_at    TIMESTAMPTZ,
+  trial           BOOLEAN DEFAULT FALSE,
+  share_to_feed   BOOLEAN,
+  draft_id        UUID,  -- генерит Bot #2
+  source_message_id BIGINT,
+  metadata        JSONB,
+  created_at      TIMESTAMPTZ DEFAULT now(),
+  approved_at     TIMESTAMPTZ,
+  published_at    TIMESTAMPTZ,
+  error           TEXT,
+  -- existing fields:
+  request_payload JSONB,
+  result_payload  JSONB
+);
+
+CREATE INDEX idx_publish_draft_id ON publish_requests(draft_id);
+```
+
+**Почему draft_id UUID, а не BIGSERIAL:** Bot #2 генерит UUID заранее (до того как approval-gateway создал запись в БД). Это даёт idempotency — Bot #2 может безопасно retry POST /publish_draft с тем же draft_id.
+
+---
+
+### 3.7. Что уже реализовано в neurostaff (по состоянию на 17.08.2026)
+
+| Endpoint | Реализован | Источник |
+|---|---|---|
+| POST /publish-request | ✅ | `publish_gateway.py:_handle_publish_request_post` |
+| POST /client-decide | ✅ | `publish_gateway.py:_handle_client_decide_post` |
+| POST /upload-media | ✅ | `publish_gateway.py:_handle_upload_media` |
+| POST /relay-telegram-media | ✅ | для паблишеров без своего R2 |
+| GET /client-decide (HTML) | ✅ | страница с inline-кнопками |
+| GET /media/{file} | ✅ | статика |
+| POST /internal/publish_draft | ❌ | нужно дописать (прозрачный wrapper над /publish-request + draft_id) |
+| GET /internal/publish_draft/<id> | ❌ | нужно дописать (SELECT по draft_id) |
+| PATCH /internal/publish_draft/<id> | ❌ | нужно дописать (UPDATE если status=pending) |
+| POST /internal/publish_draft/<id>/reject | ❌ | нужно дописать (UPDATE status=rejected) |
+| POST /internal/notify_client | ❌ | нужно дописать (прозрачный wrapper над _notify_client) |
+
+**Оценка трудоёмкости:** 5 эндпоинтов × 30–60 строк = 150–300 строк в `publish_gateway.py`. Можно сделать одним PR после того, как Bot #2 подключит Ира.
+
+---
+
+### 3.8. ENV контракт (Bot #2 → neurostaff)
+
+Bot #2 (prototype-ashet-dev) в своём `.env`:
+```bash
+NEUROSTAFF_BASE_URL=https://neurostaff-production.up.railway.app
+INTERNAL_API_SECRET_ASHET_IRINA=<shared with Bot #1>
+PUBLISH_GATEWAY_SECRET_ASHET_IRINA=<existing, fallback>
+```
+
+Bot #1 (prototype-ashet-publisher) — те же ENV (он и так публикует).
+
+Neurostaff — ничего нового, все секреты уже есть.
+
+---
+
+**Хранение медиа между ботами:** Cloudflare R2 (или любой S3-совместимый) с **presigned URL**. Base64 НЕ используется — не масштабируется для видео (рекомендация из `memory/next-session-bot2-buffer-2026-08-15.md` §2.3).
 
 ## Раздел 4: Approval-gateway — точка согласования
 
@@ -179,5 +390,6 @@ async def _prototype_ashet_publisher_quality_job(context):
 
 ## Changelog
 
+- **2026-08-17** — §3 «Передача в Bot #1» переписан: полная REST API спецификация (7 endpoints, ENV, SQL, статусная диаграмма). Добавлен §3.7 «Что уже реализовано» — зафиксировано, что 5/10 endpoints в neurostaff уже работают, 5 нужно дописать (~250 строк).
 - **2026-08-16** — черновик архитектуры, нишевый блок пустой (Ира не дала позиционирование). Привязка к существующему `neurostaff/publish_gateway.py`.
 - **2026-08-16** — зафиксировано решение по одобрению: одноступенчатое (только Ира). Решение выпечено в §4 «Approval-gateway».
