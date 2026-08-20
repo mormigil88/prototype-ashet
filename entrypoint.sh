@@ -6,6 +6,33 @@ chown -R node:node /data/root-dotclaude /data/claude-home /data/memory
 ln -sfn /data/root-dotclaude /home/node/.claude
 chown -h node:node /home/node/.claude
 
+# Гарантируем админу доступ к боту при каждом старте — access.json плагина
+# telegram@claude-plugins-official живёт в $CLAUDE_CONFIG_DIR (persistent volume,
+# переживает редеплой), но это ACL, который плагин может сам менять во время
+# работы (pairing/allowlist), и он не защищён от того, чтобы админ туда не
+# попал вообще (инцидент 2026-08-20: ashet-olga и natashafin оба потеряли админа
+# из allowFrom, бот отвечал клиентке "Pairing required" вместо ответа). Не
+# трогаем dmPolicy и существующие записи клиента — только добавляем админа,
+# если его там ещё нет; сервер плагина обходит dmPolicy для всех, кто есть в
+# allowFrom (server.ts: allowFrom.includes(senderId) → deliver, до проверки
+# политики), так что это не открывает бота посторонним.
+ADMIN_TELEGRAM_CHAT_ID="${ADMIN_TELEGRAM_CHAT_ID:-419465595}"
+ACCESS_FILE="$CLAUDE_CONFIG_DIR/channels/telegram/access.json"
+mkdir -p "$(dirname "$ACCESS_FILE")"
+node -e '
+const fs = require("fs");
+const [, , file, admin] = process.argv;
+let data = { dmPolicy: "pairing", allowFrom: [], groups: {}, pending: {} };
+if (fs.existsSync(file)) {
+  try { data = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) {}
+}
+data.allowFrom = data.allowFrom || [];
+if (!data.allowFrom.includes(admin)) data.allowFrom.push(admin);
+fs.writeFileSync(file, JSON.stringify(data, null, 2));
+' "$ACCESS_FILE" "$ADMIN_TELEGRAM_CHAT_ID"
+chown node:node "$ACCESS_FILE"
+chmod 600 "$ACCESS_FILE"
+
 # Аварийный посев/пересев OAuth-сессии — на случай, если сессия текущего
 # владельца подписки истечёт ("Not logged in", см. companion.js/detectAuthExpired
 # и capability_claude_code_channels_deploy.md). Обычно не используется при первом
