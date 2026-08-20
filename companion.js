@@ -583,3 +583,141 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`[companion] слушаю :${PORT}, читаю транскрипты из ${PROJECTS_DIR}`);
 });
+
+// ---- Fallback-доставка недоотправленных ответов -------------------------
+// Замечено в проде у Иры 20.08.2026: модель иногда генерирует полноценный
+// ответ (assistant text, stop_reason: end_turn), но не вызывает MCP-инструмент
+// reply — текст остаётся только в транскрипте и никогда не доходит до
+// Telegram, при этом сессия выглядит рабочей (JSONL растёт, другие тулы
+// вызываются). У плагина telegram нет доступа к транскрипту, поэтому сам он
+// такое не ловит. Раз в FALLBACK_INTERVAL_MS сканируем последние ходы; если
+// ход завершился текстом без успешного reply — досылаем текст напрямую через
+// Bot API в обход модели. Каждый ход помечается по uuid входящего сообщения,
+// чтобы не отправить fallback дважды.
+const FALLBACK_STATE_FILE = path.join('/data', 'claude-home', 'companion-fallback-state.json');
+const FALLBACK_INTERVAL_MS = 20000;
+const FALLBACK_MIN_AGE_MS = 15000; // не трогать ходы младше этого — модель может ещё работать
+const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TG_CHUNK_LIMIT = 4000;
+
+function loadFallbackState() {
+  try {
+    return JSON.parse(fs.readFileSync(FALLBACK_STATE_FILE, 'utf8'));
+  } catch (e) {
+    return { delivered: {} };
+  }
+}
+
+function saveFallbackState(state) {
+  try {
+    fs.writeFileSync(FALLBACK_STATE_FILE, JSON.stringify(state));
+  } catch (e) {
+    console.error('[fallback] failed to persist state:', String(e));
+  }
+}
+
+function extractChatId(text) {
+  const m = /<channel[^>]*\schat_id="(\d+)"/.exec(text || '');
+  return m ? m[1] : null;
+}
+
+async function sendFallback(chatId, text) {
+  if (!TELEGRAM_TOKEN) return false;
+  let rest = text;
+  while (rest.length > 0) {
+    const chunk = rest.slice(0, TG_CHUNK_LIMIT);
+    rest = rest.slice(TG_CHUNK_LIMIT);
+    const resp = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: chunk }),
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      console.error('[fallback] sendMessage failed:', JSON.stringify(data));
+      return false;
+    }
+  }
+  return true;
+}
+
+// Последовательный проход по файлу: каждое входящее сообщение (user-запись
+// со строковым content, то есть настоящий <channel> тег, а не tool_result)
+// открывает новую группу-ход. Всё до следующего такого сообщения относится
+// к этому ходу — tool_result'ы reply отмечают ход как доставленный, а
+// финальный assistant-текст без tool_use в том же content — кандидат на
+// fallback, если ход так и не был доставлен.
+function findUndeliveredTurns(filePath) {
+  const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(Boolean);
+  const turns = [];
+  let cur = null;
+
+  for (const line of lines) {
+    let o;
+    try { o = JSON.parse(line); } catch (e) { continue; }
+    if (o.type !== 'user' && o.type !== 'assistant') continue;
+    const content = o.message && o.message.content;
+
+    if (o.type === 'user' && typeof content === 'string') {
+      if (cur) turns.push(cur);
+      cur = { id: o.uuid, chatId: extractChatId(content), delivered: false, lastText: null, lastTs: null };
+      continue;
+    }
+    if (!cur) continue;
+
+    if (o.type === 'user' && Array.isArray(content)) {
+      for (const b of content) {
+        if (b.type !== 'tool_result') continue;
+        const inner = b.content;
+        if (!Array.isArray(inner)) continue;
+        for (const tb of inner) {
+          if (tb.type === 'text' && /^sent \(id: \d+/.test(tb.text || '')) cur.delivered = true;
+        }
+      }
+      continue;
+    }
+
+    if (o.type === 'assistant' && Array.isArray(content)) {
+      const hasToolUse = content.some(b => b.type === 'tool_use');
+      if (hasToolUse) continue;
+      const textBlock = content.find(b => b.type === 'text' && o.message.stop_reason === 'end_turn');
+      if (textBlock && textBlock.text && textBlock.text.trim()) {
+        cur.lastText = textBlock.text;
+        cur.lastTs = o.timestamp;
+      }
+    }
+  }
+  if (cur) turns.push(cur);
+  return turns;
+}
+
+async function checkUndeliveredAndDeliver() {
+  try {
+    const file = findLatestTranscript();
+    if (!file) return;
+    const turns = findUndeliveredTurns(file);
+    const state = loadFallbackState();
+    const now = Date.now();
+    let changed = false;
+
+    for (const turn of turns) {
+      if (turn.delivered || !turn.lastText || !turn.chatId) continue;
+      if (state.delivered[turn.id]) continue;
+      const ts = turn.lastTs ? Date.parse(turn.lastTs) : 0;
+      if (!ts || now - ts < FALLBACK_MIN_AGE_MS) continue;
+
+      const ok = await sendFallback(turn.chatId, turn.lastText);
+      if (ok) {
+        console.log(`[fallback] delivered undetected reply for turn ${turn.id} to chat ${turn.chatId}`);
+        state.delivered[turn.id] = true;
+        changed = true;
+      }
+    }
+
+    if (changed) saveFallbackState(state);
+  } catch (e) {
+    console.error('[fallback] check failed:', String(e));
+  }
+}
+
+setInterval(checkUndeliveredAndDeliver, FALLBACK_INTERVAL_MS);
