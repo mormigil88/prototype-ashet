@@ -42,10 +42,20 @@ async function main() {
       method: 'POST',
       headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
       body: form,
+      // Без таймаута зависший запрос к Groq блокирует весь Claude-процесс
+      // навсегда — это единственный Bash-вызов в цепочке обработки голосового,
+      // и `claude --channels` ждёт его синхронно. Поймано в проде у Иры
+      // 20.08.2026: бот молчал 10+ минут после голосового, редеплой временно
+      // чинил, но зависало снова на следующем голосовом/кружке.
+      signal: AbortSignal.timeout(60000),
     });
     data = await resp.json();
   } catch (e) {
-    console.error('Ошибка сети при обращении к Groq:', String(e));
+    if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+      console.error('Groq не ответил за 60 секунд (таймаут)');
+    } else {
+      console.error('Ошибка сети при обращении к Groq:', String(e));
+    }
     process.exit(1);
   }
 
