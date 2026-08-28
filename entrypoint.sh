@@ -21,7 +21,7 @@ ACCESS_FILE="$CLAUDE_CONFIG_DIR/channels/telegram/access.json"
 mkdir -p "$(dirname "$ACCESS_FILE")"
 node -e '
 const fs = require("fs");
-const [, , file, admin] = process.argv;
+const [, file, admin] = process.argv;
 let data = { dmPolicy: "pairing", allowFrom: [], groups: {}, pending: {} };
 if (fs.existsSync(file)) {
   try { data = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) {}
