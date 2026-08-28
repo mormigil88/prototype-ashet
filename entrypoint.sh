@@ -78,7 +78,8 @@ else
   echo "[entrypoint] предыдущих сессий не найдено — новая сессия"
 fi
 
-# A new Claude Code home asks once for a terminal theme. There is no human TTY
-# in Railway, so submit the harmless "Dark mode" choice while keeping stdin
-# open afterwards; an EOF would otherwise be interpreted as Ctrl-D/quit.
-exec env HOME=/home/node su -p node -c "{ printf '2\\n'; tail -f /dev/null; } | script -qec \"$CLAUDE_CMD\" /dev/null"
+# A new Claude Code home asks for a terminal theme and confirmation of the
+# already-configured bypass mode. Railway has no human TTY, so acknowledge both
+# one-time startup prompts while keeping stdin open afterwards; an EOF would be
+# interpreted as Ctrl-D/quit by the channels process.
+exec env HOME=/home/node su -p node -c "{ printf '2\\ny\\n'; tail -f /dev/null; } | script -qec \"$CLAUDE_CMD\" /dev/null"
