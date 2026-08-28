@@ -6,16 +6,6 @@ chown -R node:node /data/root-dotclaude /data/claude-home /data/memory
 ln -sfn /data/root-dotclaude /home/node/.claude
 chown -h node:node /home/node/.claude
 
-# Claude Code shows an interactive theme picker on a pristine $HOME. Railway
-# services have no TTY to answer it, so mark this harmless UI onboarding as
-# complete before the channels process is started. Authentication is separate
-# and is never seeded here.
-if [ ! -f /home/node/.claude.json ]; then
-  printf '%s\n' '{"hasCompletedOnboarding":true,"theme":"dark"}' > /home/node/.claude.json
-  chown node:node /home/node/.claude.json
-  chmod 600 /home/node/.claude.json
-fi
-
 # Гарантируем админу доступ к боту при каждом старте — access.json плагина
 # telegram@claude-plugins-official живёт в $CLAUDE_CONFIG_DIR (persistent volume,
 # переживает редеплой), но это ACL, который плагин может сам менять во время
@@ -80,7 +70,7 @@ su -p node -c 'node /app/companion.js' &
 # иначе каждый редеплой начинал новую сессию Claude Code и короткий разговор
 # (2-7 реплик, обычный для Ольги) терялся, даже если факты/summary выше уже
 # подгружены. Первый запуск/новый volume — без --continue (сессий ещё нет).
-CLAUDE_CMD="claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions"
+CLAUDE_CMD="claude --ax-screen-reader --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions"
 if compgen -G "/data/claude-home/projects/-app/*.jsonl" > /dev/null 2>&1; then
   CLAUDE_CMD="$CLAUDE_CMD --continue"
   echo "[entrypoint] найдена предыдущая сессия — продолжаем (--continue)"
