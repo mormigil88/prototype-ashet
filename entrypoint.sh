@@ -78,8 +78,8 @@ else
   echo "[entrypoint] предыдущих сессий не найдено — новая сессия"
 fi
 
-# A new Claude Code home asks for a terminal theme and confirmation of the
-# already-configured bypass mode. Railway has no human TTY. These prompts render
-# asynchronously, so wait before their selections and final confirmation. Keep
-# stdin open afterwards; an EOF would be interpreted as Ctrl-D/quit.
-exec env HOME=/home/node su -p node -c "{ printf '2\\n'; sleep 15; printf 'y\\n'; sleep 15; printf '\\n'; tail -f /dev/null; } | script -qec \"$CLAUDE_CMD\" /dev/null"
+# The persistent dev volume has already stored its terminal-theme choice. The
+# remaining bypass confirmation renders asynchronously and requires a separate
+# Enter after choosing y. Keep stdin open afterwards; an EOF would be treated as
+# Ctrl-D/quit by the channels process.
+exec env HOME=/home/node su -p node -c "{ sleep 15; printf 'y\\n'; sleep 45; printf '\\n'; tail -f /dev/null; } | script -qec \"$CLAUDE_CMD\" /dev/null"
