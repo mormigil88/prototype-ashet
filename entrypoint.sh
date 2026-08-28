@@ -78,4 +78,7 @@ else
   echo "[entrypoint] предыдущих сессий не найдено — новая сессия"
 fi
 
-exec env HOME=/home/node su -p node -c "script -qec \"$CLAUDE_CMD\" /dev/null"
+# A new Claude Code home asks once for a terminal theme. There is no human TTY
+# in Railway, so submit the harmless "Dark mode" choice and leave stdin empty
+# afterwards for the Telegram channels plugin.
+exec env HOME=/home/node su -p node -c "printf '2\\n' | script -qec \"$CLAUDE_CMD\" /dev/null"
