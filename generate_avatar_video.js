@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Генерирует говорящее видео с аватаром и клонированным голосом Ольги —
+// Генерирует говорящее видео с аватаром и клонированным голосом Ирины —
 // целиком через HeyGen (синтез речи её клонированным голосом + липсинк
 // аватара в одном вызове). Решение от 22.07.2026: ElevenLabs убран из
 // архитектуры — HeyGen сам умеет клонировать голос (см. clone_voice.js),
@@ -16,8 +16,14 @@ const os = require('os');
 const path = require('path');
 
 const API_KEY = process.env.HEYGEN_API_KEY;
-const AVATAR_ID = process.env.HEYGEN_AVATAR_ID_OLGA;
-const VOICE_ID = process.env.HEYGEN_VOICE_ID_OLGA;
+let twinConfig = {};
+try {
+  twinConfig = JSON.parse(fs.readFileSync('/data/heygen_irina_digital_twin.json', 'utf8'));
+} catch (_) {
+  // Digital Twin ещё не создан — используем текущий фото-аватар.
+}
+const AVATAR_ID = twinConfig.avatar_id || process.env.HEYGEN_AVATAR_ID_IRINA;
+const VOICE_ID = twinConfig.voice_id || process.env.HEYGEN_VOICE_ID_IRINA;
 const API_BASE = 'https://api.heygen.com';
 
 const RATIOS = {
@@ -36,10 +42,10 @@ async function main() {
     fail('HEYGEN_API_KEY не задан в окружении контейнера — видео-аватар ещё не подключён.');
   }
   if (!AVATAR_ID) {
-    fail('HEYGEN_AVATAR_ID_OLGA не задан — её аватар ещё не создан (разовая настройка, см. create_avatar.js).');
+    fail('Аватар Ирины ещё не создан: нужен HEYGEN_AVATAR_ID_IRINA или завершённый Digital Twin.');
   }
   if (!VOICE_ID) {
-    fail('HEYGEN_VOICE_ID_OLGA не задан — её голос ещё не клонирован (разовая настройка, см. clone_voice.js).');
+    fail('HEYGEN_VOICE_ID_IRINA не задан — голос Ирины ещё не клонирован (разовая настройка, см. clone_voice.js).');
   }
 
   const [, , script, ratioArg] = process.argv;

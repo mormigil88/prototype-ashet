@@ -1,12 +1,7 @@
 #!/usr/bin/env node
 // Генерирует изображение по текстовому описанию.
-// Основной движок — OpenAI (gpt-image-1), запрошен Ольгой ради стиля/качества
-// (сменили с Runway 02.08.2026). Runway остаётся резервным движком: он тоже
-// платный и уже проверен вживую (переход на него с бесплатного Pollinations
-// 23.07.2026 из-за артефактов на пальцах рук), но включается ТОЛЬКО по явному
-// запросу — либо третьим аргументом, либо когда OpenAI отвечает нехваткой
-// денег/квоты (см. failNoFunds). Автоматического молчаливого переключения нет:
-// Ашету предписано (CLAUDE.md) сначала спросить Ольгу.
+// Основной движок для Ирины — Runway (gen4_image). OpenAI остаётся
+// совместимым явным вариантом для проектов, где задан OPENAI_API_KEY.
 //   OpenAI:  POST /v1/images/generations { model: 'gpt-image-1', prompt, size, quality }
 //            → { data: [{ b64_json }] } (gpt-image-1 всегда отдаёт base64, не url)
 //   Runway:  POST /v1/text_to_image { model: 'gen4_image', promptText, ratio } → { id }
@@ -183,7 +178,7 @@ async function main() {
     fail('Использование: node generate_image.js "<промпт>" [square|story|post] [openai|runway]');
   }
   const orientation = ['square', 'story', 'post'].includes(orientationArg) ? orientationArg : 'square';
-  const engine = engineArg === 'runway' ? 'runway' : 'openai';
+  const engine = engineArg === 'openai' ? 'openai' : 'runway';
 
   if (engine === 'runway') {
     await generateViaRunway(prompt, orientation);

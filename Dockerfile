@@ -1,10 +1,18 @@
 FROM node:20-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl unzip ca-certificates git \
+    curl unzip ca-certificates git python3 python3-pip \
     imagemagick fontconfig fonts-dejavu-core \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+# Локальная сегментация создаёт маску человека: после Runway оригинальные
+# пиксели лица и тела накладываются обратно, а не перерисовываются моделью.
+ENV U2NET_HOME="/opt/rembg-models"
+ENV NUMBA_DISABLE_JIT="1"
+RUN python3 -m pip install --no-cache-dir --break-system-packages "rembg[cpu]==2.0.67" \
+    && python3 -c "from rembg import new_session; new_session('u2net_human_seg')" \
+    && chown -R node:node /opt/rembg-models
 
 # Bun — нужен плагинам-каналам (Telegram/Discord — это Bun-скрипты)
 # Ставим в /opt, а не в $HOME=/root — непривилегированный appuser не может
@@ -42,14 +50,29 @@ COPY transcribe.js /app/transcribe.js
 COPY edit_image.js /app/edit_image.js
 COPY publish_request.js /app/publish_request.js
 COPY canva_render.js /app/canva_render.js
+COPY segment_person.py /app/segment_person.py
+COPY preserve_person.py /app/preserve_person.py
+COPY segment_face.py /app/segment_face.py
+COPY preserve_face.py /app/preserve_face.py
+COPY edit_image_runway.js /app/edit_image_runway.js
 COPY generate_image.js /app/generate_image.js
 COPY generate_video.js /app/generate_video.js
 COPY compose_video.js /app/compose_video.js
+COPY add_video_text.js /app/add_video_text.js
+COPY burn_word_subtitles.js /app/burn_word_subtitles.js
 COPY generate_avatar_video.js /app/generate_avatar_video.js
 COPY clone_voice.js /app/clone_voice.js
 COPY create_avatar.js /app/create_avatar.js
+COPY prepare_youtube_avatar_source.js /app/prepare_youtube_avatar_source.js
+COPY create_digital_twin.js /app/create_digital_twin.js
 COPY recall_memory.js /app/recall_memory.js
 RUN chown -R node:node /app
+
+# Нужен в рантайме, чтобы подготовить собственный ролик Иры с YouTube для
+# обучения HeyGen Digital Twin (после явного подтверждения прав и согласия).
+RUN curl -L --fail --retry 3 \
+    https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+    -o /usr/local/bin/yt-dlp && chmod 755 /usr/local/bin/yt-dlp
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
