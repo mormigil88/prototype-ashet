@@ -220,6 +220,432 @@ function getTurns(filePath, since) {
   return turns;
 }
 
+// 17.08.2026 v2: /delivery — извлекает факты Telegram delivery из JSONL.
+//
+// ЧТО ИСТИННО ПО ПЛАГИНУ: единственная точка отправки пользователю —
+// bot.api.sendMessage(...) внутри MCP tool 'reply' (см. server.ts:563
+// плагина claude-plugins-official/telegram/0.0.7). При успехе tool_result
+// содержит "sent (id: N)" / "sent N parts (ids: ...)" — это ДОКАЗАТЕЛЬСТВО
+// доставки (Telegram Bot API вернул message_id). При ошибке — is_error=true
+// или "reply failed after ...". Плагин НЕ отправляет plain assistant text
+// автоматически (см. plugin instructions: "transcript output never reaches
+// their chat"). Если в реальном JSONL видим assistant text без tool reply
+// (включая случаи, когда перед текстом были WebFetch/Read/Bash/Search — это
+// НЕ доставка) — фиксируем как assistant_plain_text_no_reply, а НЕ как
+// delivered и НЕ шлём fallback-текст (чтобы не дублировать, если Anthropic
+// в будущем введёт auto-send).
+//
+// ЧТО ЭТА ФУНКЦИЯ ДЕЛАЕТ: парсит JSONL построчно и эмитит СОБЫТИЯ:
+//   - type='inbound'              — новое входящее от Telegram
+//   - type='reply_started'        — плагин вызвал tool 'reply'
+//   - type='delivered'            — tool_result: sent (id: N) (Telegram подтвердил)
+//   - type='failed'               — tool_result: isError или "reply failed after"
+//   - type='assistant_plain_text_no_reply' — assistant text БЕЗ tool reply call
+//     (но возможно С другими tool_use: WebFetch/Read/Bash/Search — это НЕ доставка)
+//
+// SCOPE (18.08.2026 v3.1):
+//   - 'scoped'   — сессия содержит ровно 1 chat_id → incident привязан к этому чату
+//   - 'unscoped' — сессия содержит 0 или ≥2 chat_id → incident НЕ имеет chat_id,
+//     НЕ показывает кнопку ручной доставки клиенту (риск отправки не тому)
+//   Решение принимается на уровне СЕССИИ, а не отдельного turn — даже если
+//   plain text синтаксически после inbound от chat A, при наличии chat B
+//   в той же JSONL-сессии атрибуция неоднозначна.
+//
+// Идемпотентность: super_bot.py использует (bot_slug, chat_id, inbound_message_id)
+// как UNIQUE ключ для scoped → повторный poll = UPSERT, не дубликат.
+// Для unscoped — отдельная таблица (см. migration_27).
+//
+// Идемпотентность: super_bot.py использует (bot_slug, chat_id, inbound_message_id)
+// как UNIQUE ключ → повторный poll = UPSERT, не дубликат.
+//
+// Source string в JSONL: бывает два формата (плагин 0.0.7 + новые версии CC):
+//   <channel source="telegram" chat_id="..." message_id="...">             ← старый
+//   <channel source="plugin:telegram:telegram" chat_id="..." message_id="..."> ← новый
+// Регекс ниже ловит ОБА.
+//
+// inbound_message_id NOT NULL: если не распарсился — caller в super_bot
+// должен пометить invalid-маркером и заалертить, НЕ объединять.
+//
+// Безопасность:
+//   - В логи НЕ попадают токены.
+//   - response_text — это текст бота (исходящий). НЕ пользовательский.
+function getDeliveries(filePath) {
+  const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(Boolean);
+  // v3.1.1: session_id = basename of JSONL file (стабильный идентификатор
+  // транскрипта, не зависит от poll count). Используется в incident_key для
+  // идемпотентности UNSCOPED incidents (Блокер 2): повторный poll тех же
+  // JSONL-событий → тот же session_id → тот же incident_key → ON CONFLICT
+  // DO NOTHING. Два разных violating turn → разные assistant_ts → разные
+  // ключи.
+  const sessionId = filePath.split('/').pop();
+
+  // Проход 1: собираем все блоки в индексированные структуры.
+  const inboundsByChatId = new Map();    // chat_id -> [{ts, message_id}]
+  const replyToolUseById = new Map();    // tool_use_id -> {ts, chat_id, reply_to, text}
+  const replyToolResultById = new Map(); // tool_use_id -> {ts, is_error, content_text}
+  const assistantTurns = [];             // [{ts, has_text, has_tool_use, snapshot_of_lastInbound}]
+  let lastInboundPerChat = new Map();    // chat_id -> message_id (для матча assistant text)
+
+  for (const line of lines) {
+    let o; try { o = JSON.parse(line); } catch (e) { continue; }
+    const ts = o.timestamp;
+    if (!ts) continue;
+    const isUser = o.type === 'user' || (o.message && o.message.role === 'user');
+    const isAssistant = o.type === 'assistant' || (o.message && o.message.role === 'assistant');
+    const content = (o.message && Array.isArray(o.message.content)) ? o.message.content : [];
+
+    if (isUser && content.length) {
+      for (const block of content) {
+        // 1. Парсим <channel ...> блок (ТОЛЬКО в user, не в assistant).
+        if (block.type === 'text' && typeof block.text === 'string') {
+          // Два формата source: "telegram" или "plugin:telegram:telegram"
+          const meta = block.text.match(
+            /<channel\s+source="(?:plugin:telegram:)?telegram"[^>]*chat_id="([^"]+)"[^>]*\bmessage_id="([^"]+)"/
+          );
+          if (meta) {
+            const chatId = meta[1];
+            const messageId = meta[2];
+            if (!inboundsByChatId.has(chatId)) inboundsByChatId.set(chatId, []);
+            inboundsByChatId.get(chatId).push({ ts, message_id: messageId });
+            lastInboundPerChat.set(chatId, messageId);
+            continue;
+          }
+        }
+        // 2. tool_result в user-сообщении (это ответ Claude на tool call).
+        if (block.type === 'tool_result' && block.tool_use_id) {
+          let contentText = '';
+          if (Array.isArray(block.content)) {
+            contentText = block.content
+              .filter(b => b && b.type === 'text' && typeof b.text === 'string')
+              .map(b => b.text)
+              .join('\n');
+          } else if (typeof block.content === 'string') {
+            contentText = block.content;
+          }
+          replyToolResultById.set(block.tool_use_id, {
+            ts,
+            is_error: !!block.is_error,
+            content_text: contentText,
+          });
+        }
+      }
+    }
+
+    if (isAssistant && content.length) {
+      let hasText = false;
+      let hasReplyToolUse = false;       // v3.1: split tool_use на reply vs non-reply
+      let hasNonReplyToolUse = false;
+      let textParts = [];  // v3.1: полный plain assistant text (без truncation)
+      for (const block of content) {
+        if (block.type === 'text' && typeof block.text === 'string' && block.text.length > 0) {
+          hasText = true;
+          textParts.push(block.text);
+        }
+        if (block.type === 'tool_use' && block.id) {
+          if (block.name === 'reply') {
+            const input = block.input || {};
+            replyToolUseById.set(block.id, {
+              ts,
+              chat_id: input.chat_id ? String(input.chat_id) : null,
+              reply_to: input.reply_to ? String(input.reply_to) : null,
+              text: typeof input.text === 'string' ? input.text : '',
+            });
+            hasReplyToolUse = true;
+          } else {
+            // WebFetch, Bash, Read, Search и любые другие — это НЕ доставка.
+            // turn с такими tools всё равно считается "нарушением контракта",
+            // если в нём есть text И НЕТ reply tool_use.
+            hasNonReplyToolUse = true;
+          }
+        }
+      }
+      assistantTurns.push({
+        ts,
+        has_text: hasText,
+        has_reply_tool_use: hasReplyToolUse,
+        has_non_reply_tool_use: hasNonReplyToolUse,
+        // v3.1: ПОЛНЫЙ plain text, без slice — будем хранить в отдельной
+        // колонке response_text в outbox (НЕ в last_error и НЕ в логах).
+        response_text: textParts.join('\n'),
+        // Снимок lastInboundPerChat на момент этого turn (для causal inference).
+        snapshot: new Map(lastInboundPerChat),
+      });
+    }
+  }
+
+  // Проход 2: формируем массив событий.
+  const events = [];
+
+  // 2.1. Inbound-события: для каждого user-сообщения emit 'inbound' (даже если
+  // на него ещё не ответили). Гарантирует pending-запись в outbox.
+  for (const [chatId, inbounds] of inboundsByChatId.entries()) {
+    for (const inc of inbounds) {
+      events.push({
+        type: 'inbound',
+        chat_id: chatId,
+        inbound_message_id: inc.message_id,
+        received_at: inc.ts,
+      });
+    }
+  }
+
+  // 2.2. Reply tool events: для каждой пары tool_use+tool_result.
+  //
+  // Причинное сопоставление reply → inbound (повторный review, 18.08.2026):
+  //   - если reply_to указан → использовать ТОЛЬКО его (НЕ fallback на последний);
+  //   - если reply_to НЕТ → выбирать последнее inbound этого chat_id с
+  //     timestamp <= tool_call_ts (НЕ позже!);
+  //   - если такого inbound нет → НЕ создавать scoped delivery event,
+  //     а эмитить unscoped diagnostic incident БЕЗ кнопки доставки.
+  //   - НИКОГДА не привязывать reply к inbound, пришедшему ПОСЛЕ tool_call_ts.
+  //
+  // Зачем: иначе reply tool мог "связаться" с более поздним сообщением
+  // клиента, и incident на тот поздний inbound остался бы невидимым.
+  for (const [toolUseId, use] of replyToolUseById.entries()) {
+    if (!use.chat_id) continue;  // Без chat_id не имеем права создавать запись.
+    const result = replyToolResultById.get(toolUseId);
+    const inbounds = inboundsByChatId.get(use.chat_id) || [];
+
+    // Найдём inbound_messageId причинно связанный с этим reply.
+    let inboundMessageId = null;
+    let receivedAt = null;
+    let matchedCausally = false;
+
+    if (use.reply_to) {
+      // Явный reply_to — единственный источник истины. Никакого fallback.
+      const m = inbounds.find(i => i.message_id === use.reply_to);
+      if (m && m.ts <= use.ts) {
+        inboundMessageId = m.message_id;
+        receivedAt = m.ts;
+        matchedCausally = true;
+      }
+      // Если reply_to указан, но inbound пришёл ПОСЛЕ tool_call_ts (или не
+      // существует) — это нарушение причинности → НЕ создаём scoped event.
+    } else {
+      // Нет reply_to → последнее inbound этого chat_id с ts <= tool_call_ts.
+      let candidate = null;
+      for (const inc of inbounds) {
+        if (inc.ts <= use.ts) {
+          if (!candidate || inc.ts > candidate.ts) candidate = inc;
+        }
+      }
+      if (candidate) {
+        inboundMessageId = candidate.message_id;
+        receivedAt = candidate.ts;
+        matchedCausally = true;
+      }
+      // Иначе (нет inbound до tool_call_ts) → unscoped diagnostic.
+    }
+
+    if (!matchedCausally) {
+      // Diagnostic incident: reply tool без причинно-связанного inbound.
+      // НЕ создаём scoped delivery event (НЕТ chat_id→inbound привязки,
+      // которую можно записать в UNIQUE-таблицу delivery_outbox_v2).
+      // Эмитим diagnostic event с reason='no_causal_inbound'.
+      events.push({
+        type: 'assistant_no_causal_inbound',
+        scope: 'unscoped',
+        chat_id: use.chat_id,
+        inbound_message_id: null,
+        assistant_ts: use.ts,
+        response_text: use.text || '',
+        reason: 'no_causal_inbound',
+        multi_chat: false,
+        session_chat_count: inboundsByChatId.size,
+        session_id: sessionId,
+        // v3.1.1: чтобы супервизор мог показать tool_use_id для отладки.
+        tool_use_id: toolUseId,
+      });
+      continue;
+    }
+
+    // reply_started всегда эмитим (создаёт/обновляет запись на status=generating).
+    events.push({
+      type: 'reply_started',
+      chat_id: use.chat_id,
+      inbound_message_id: inboundMessageId,
+      received_at: receivedAt,
+      tool_call_ts: use.ts,
+      response_text: use.text || '',
+    });
+
+    if (result) {
+      const txt = result.content_text || '';
+      const m = txt.match(/sent\s+(?:\d+\s+parts\s+)?\(ids?:\s*([^)]+)\)/i);
+      const isNumericIds = m && m[1].split(',').every(s => /^\d+\s*$/.test(s.trim()));
+      if (!result.is_error && isNumericIds) {
+        const ids = m[1].split(',').map(s => s.trim());
+        events.push({
+          type: 'delivered',
+          chat_id: use.chat_id,
+          inbound_message_id: inboundMessageId,
+          tool_result_ts: result.ts,
+          outbound_message_ids: ids,
+          response_text: use.text || '',
+        });
+      } else {
+        events.push({
+          type: 'failed',
+          chat_id: use.chat_id,
+          inbound_message_id: inboundMessageId,
+          tool_result_ts: result.ts,
+          last_error: (txt || (result.is_error ? 'reply tool isError=true' : 'unknown')).slice(0, 500),
+          response_text: use.text || '',
+        });
+      }
+    }
+    // Если result === null, reply_started уже эмитнут; супервизор увидит
+    // status=delivering по timeout.
+  }
+
+  // 2.3. v3.1: assistant-text БЕЗ tool reply = violation of contract,
+  // НЕЗАВИСИМО от других tools в turn (WebFetch/Read/Bash/Search —
+  // это НЕ доставка, они не отправляют текст в Telegram).
+  //
+  // Правило: turn нарушает контракт, если has_text && !has_reply_tool_use.
+  // Любые non-reply tools в turn не отменяют нарушение.
+  //
+  // Плагин v0.0.7 не делает auto-send для plain text (доказано в
+  // /tmp/delivery_outbox_v3_DIAGNOSTIC_REPORT.md, HIGH 90%). Значит, такой
+  // текст НЕ дойдёт до пользователя Telegram, и нужно зафиксировать это
+  // как incident — а НЕ считать доставленным и НЕ слать fallback-текст
+  // (чтобы не дублировать, если в реальности auto-send в будущем появится).
+  //
+  // SCOPE (session-level):
+  //   - session.chatCount === 1 → 'scoped' к этому чату
+  //   - session.chatCount === 0 или ≥2 → 'unscoped' (БЕЗ chat_id, БЕЗ delivery кнопки)
+  // Решение принимается на уровне ВСЕЙ сессии, а не отдельного turn — даже
+  // если plain text синтаксически после inbound от chat A, при наличии
+  // chat B в той же JSONL-сессии атрибуция неоднозначна → unscoped.
+  //
+  // Для UNSCOPED эмитим РОВНО ОДИН event на сессию (даже если несколько
+  // plain-text turn'ов) — никакого false multi-chat incident.
+  // Для SCOPED — один event на (chat_id, inbound_message_id).
+  const sessionChatCount = inboundsByChatId.size;
+  const sessionChatIds = Array.from(inboundsByChatId.keys());
+  const isMultiChatSession = sessionChatCount >= 2;
+
+  if (isMultiChatSession || sessionChatCount === 0) {
+    // Unscoped: per-turn проверка. Каждый violating turn оценивается
+    // НЕЗАВИСИМО по своему snapshot.lastInboundPerChat — был ли тот inbound,
+    // на который этот turn ОТВЕЧАЕТ, доставлен?
+    //
+    // "Отвечает на" = самый последний inbound по timestamp в snapshot этого
+    // turn. (Если в snapshot только один chat — берём его; если несколько —
+    // берём тот, чей inbound_ts самый поздний.)
+    //
+    // Повторный review (18.08.2026): для КАЖДОГО violating turn эмитим
+    // ОТДЕЛЬНЫЙ event со своим assistant_ts и response_text. Каждый event
+    // получает уникальный incident_key в super_bot через (bot_slug, session_id,
+    // assistant_ts, sha256(response_text)) — повторный poll не дублирует,
+    // разные turn'ы → разные incidents.
+    //
+    // Контрпример: в multi-chat сессии два plain-text turn'а (утром и
+    // вечером) → ДВА unscoped events → ДВА incidents в DB.
+    for (const t of assistantTurns) {
+      if (!(t.has_text && !t.has_reply_tool_use)) continue;
+      // Самое свежее inbound в snapshot (по ts).
+      let currentChatId = null, currentInboundId = null, currentTs = '';
+      for (const [chatId, inboundId] of t.snapshot.entries()) {
+        // Ищем ts для этого inboundId в inboundsByChatId.
+        const incs = inboundsByChatId.get(chatId) || [];
+        const inc = incs.find(i => i.message_id === inboundId);
+        const incTs = inc ? inc.ts : '';
+        if (incTs > currentTs) {
+          currentTs = incTs;
+          currentChatId = chatId;
+          currentInboundId = inboundId;
+        }
+      }
+      // Пустой snapshot (нет inbounds вообще) → всё равно violation,
+      // без проверки delivered (нечего проверять).
+      if (currentChatId) {
+        // Проверяем: для currentChatId+currentInboundId есть delivered event?
+        const explained = events.some(e =>
+          e.type === 'delivered' &&
+          (e.outbound_message_ids || []).length > 0 &&
+          e.chat_id === currentChatId &&
+          e.inbound_message_id === currentInboundId
+        );
+        if (explained) continue;  // Этот turn объяснён, не violation.
+      }
+      // Эмитим ОТДЕЛЬНЫЙ event для этого violating turn (НЕ первый из массива).
+      events.push({
+        type: 'assistant_plain_text_no_reply',
+        scope: 'unscoped',
+        chat_id: null,
+        inbound_message_id: null,
+        assistant_ts: t.ts,
+        response_text: t.response_text,
+        reason: 'violation_of_contract',
+        multi_chat: isMultiChatSession,
+        session_chat_count: sessionChatCount,
+        // v3.1.1: стабильный session_id для построения incident_key в super_bot.
+        session_id: sessionId,
+      });
+    }
+  } else {
+    // Scoped: ровно один chat в сессии → per-turn по snapshot этого чата.
+    //
+    // Повторный review (18.08.2026): для КАЖДОГО violating turn эмитим
+    // ОТДЕЛЬНЫЙ event со своим assistant_ts, response_text и
+    // inbound_message_id (свой для каждого turn — НЕ последний сессии).
+    const [chatId] = Array.from(lastInboundPerChat.entries())[0];
+    for (const t of assistantTurns) {
+      if (!(t.has_text && !t.has_reply_tool_use)) continue;
+      const snapshotInboundId = t.snapshot.get(chatId);
+      if (!snapshotInboundId) {
+        // Пустой snapshot → всё равно violation, берём последний inbound
+        // сессии для атрибуции (но incident_key от assistant_ts).
+        const lastInboundId = Array.from(lastInboundPerChat.entries())[0][1];
+        events.push({
+          type: 'assistant_plain_text_no_reply',
+          scope: 'scoped',
+          chat_id: chatId,
+          inbound_message_id: lastInboundId,
+          assistant_ts: t.ts,
+          response_text: t.response_text,
+          reason: 'violation_of_contract',
+          multi_chat: false,
+          session_chat_count: 1,
+          session_id: sessionId,
+        });
+        continue;
+      }
+      const alreadyDelivered = events.some(e =>
+        e.chat_id === chatId &&
+        e.inbound_message_id === snapshotInboundId &&
+        (e.type === 'delivered' || e.type === 'reply_started')
+      );
+      if (alreadyDelivered) continue;  // Не violation.
+      // Эмитим ОТДЕЛЬНЫЙ event для этого violating turn.
+      events.push({
+        type: 'assistant_plain_text_no_reply',
+        scope: 'scoped',
+        chat_id: chatId,
+        inbound_message_id: snapshotInboundId,
+        assistant_ts: t.ts,
+        response_text: t.response_text,
+        reason: 'violation_of_contract',
+        multi_chat: false,
+        session_chat_count: 1,
+        session_id: sessionId,
+      });
+    }
+  }
+
+  // Сортируем chronologically по ts (первое событие = самый старый).
+  events.sort((a, b) => {
+    const aTs = a.received_at || a.tool_call_ts || a.tool_result_ts || a.assistant_ts || '';
+    const bTs = b.received_at || b.tool_call_ts || b.tool_result_ts || b.assistant_ts || '';
+    if (aTs !== bTs) return aTs < bTs ? -1 : 1;
+    if (a.chat_id !== b.chat_id) return a.chat_id < b.chat_id ? -1 : 1;
+    return 0;
+  });
+
+  return events;
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
@@ -239,6 +665,37 @@ const server = http.createServer((req, res) => {
       const turns = getTurns(file, since);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, turns }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+    }
+    return;
+  }
+
+  // 17.08.2026 v2: /delivery — события Telegram delivery из JSONL
+  // (см. getDeliveries выше). Используется super_bot'ом для outbox'а и нового
+  // silence supervisor'а. Ответ — массив событий (inbound/reply_started/delivered/
+  // failed/unknown_no_tool_reply) с chat_id + inbound_message_id. response_text
+  // — это исходящий текст бота (не пользовательский).
+  if (url.pathname === '/delivery') {
+    try {
+      const file = findLatestTranscript();
+      if (!file) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, no_session_yet: true, events: [] }));
+        return;
+      }
+      const since = url.searchParams.get('since') || '';
+      let events = getDeliveries(file);
+      if (since) {
+        // Фильтр по любой ts-метке события (received_at/tool_call_ts/...).
+        events = events.filter(e => {
+          const ts = e.received_at || e.tool_call_ts || e.tool_result_ts || e.assistant_ts || '';
+          return ts > since;
+        });
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, events }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: String(e) }));

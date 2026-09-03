@@ -40,6 +40,8 @@ COPY CLAUDE.md /app/CLAUDE.base.md
 COPY companion.js /app/companion.js
 COPY transcribe.js /app/transcribe.js
 COPY edit_image.js /app/edit_image.js
+COPY publish_request.js /app/publish_request.js
+COPY canva_render.js /app/canva_render.js
 COPY generate_image.js /app/generate_image.js
 COPY generate_video.js /app/generate_video.js
 COPY compose_video.js /app/compose_video.js
