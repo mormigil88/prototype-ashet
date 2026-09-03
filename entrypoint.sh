@@ -6,6 +6,33 @@ chown -R node:node /data/root-dotclaude /data/claude-home /data/memory
 ln -sfn /data/root-dotclaude /home/node/.claude
 chown -h node:node /home/node/.claude
 
+# Гарантируем админу доступ к боту при каждом старте — access.json плагина
+# telegram@claude-plugins-official живёт в $CLAUDE_CONFIG_DIR (persistent volume,
+# переживает редеплой), но это ACL, который плагин может сам менять во время
+# работы (pairing/allowlist), и он не защищён от того, чтобы админ туда не
+# попал вообще (инцидент 2026-08-20: ashet-olga и natashafin оба потеряли админа
+# из allowFrom, бот отвечал клиентке "Pairing required" вместо ответа). Не
+# трогаем dmPolicy и существующие записи клиента — только добавляем админа,
+# если его там ещё нет; сервер плагина обходит dmPolicy для всех, кто есть в
+# allowFrom (server.ts: allowFrom.includes(senderId) → deliver, до проверки
+# политики), так что это не открывает бота посторонним.
+ADMIN_TELEGRAM_CHAT_ID="${ADMIN_TELEGRAM_CHAT_ID:-419465595}"
+ACCESS_FILE="$CLAUDE_CONFIG_DIR/channels/telegram/access.json"
+mkdir -p "$(dirname "$ACCESS_FILE")"
+node -e '
+const fs = require("fs");
+const [, file, admin] = process.argv;
+let data = { dmPolicy: "pairing", allowFrom: [], groups: {}, pending: {} };
+if (fs.existsSync(file)) {
+  try { data = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) {}
+}
+data.allowFrom = data.allowFrom || [];
+if (!data.allowFrom.includes(admin)) data.allowFrom.push(admin);
+fs.writeFileSync(file, JSON.stringify(data, null, 2));
+' "$ACCESS_FILE" "$ADMIN_TELEGRAM_CHAT_ID"
+chown node:node "$ACCESS_FILE"
+chmod 600 "$ACCESS_FILE"
+
 # Аварийный посев/пересев OAuth-сессии — на случай, если сессия текущего
 # владельца подписки истечёт ("Not logged in", см. companion.js/detectAuthExpired
 # и capability_claude_code_channels_deploy.md). Обычно не используется при первом
@@ -43,7 +70,7 @@ su -p node -c 'node /app/companion.js' &
 # иначе каждый редеплой начинал новую сессию Claude Code и короткий разговор
 # (2-7 реплик, обычный для Ольги) терялся, даже если факты/summary выше уже
 # подгружены. Первый запуск/новый volume — без --continue (сессий ещё нет).
-CLAUDE_CMD="claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions"
+CLAUDE_CMD="claude --ax-screen-reader --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions"
 if compgen -G "/data/claude-home/projects/-app/*.jsonl" > /dev/null 2>&1; then
   CLAUDE_CMD="$CLAUDE_CMD --continue"
   echo "[entrypoint] найдена предыдущая сессия — продолжаем (--continue)"
@@ -51,4 +78,8 @@ else
   echo "[entrypoint] предыдущих сессий не найдено — новая сессия"
 fi
 
-exec env HOME=/home/node su -p node -c "script -qec \"$CLAUDE_CMD\" /dev/null"
+# The persistent dev volume has already stored its terminal-theme choice. The
+# remaining bypass confirmation renders asynchronously and requires a separate
+# Enter after choosing y. Keep stdin open afterwards; an EOF would be treated as
+# Ctrl-D/quit by the channels process.
+exec env HOME=/home/node su -p node -c "{ sleep 15; printf 'y\\n'; sleep 45; printf '\\n'; tail -f /dev/null; } | script -qec \"$CLAUDE_CMD\" /dev/null"
