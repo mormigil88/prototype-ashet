@@ -38,10 +38,39 @@ function getLimits() {
     return { ok: true, log_present: false, limit_hit: false, approaching: false, resets_at: null };
   }
   const tail = text.split('\n').slice(-120).join('\n');
-  const hit = tail.match(/hit your (?:session|weekly) limit[^\n]*?resets?\s+(\d{1,2}:\d{2}\s*(?:am|pm)?)/i);
-  const approaching = /approaching (?:your )?(?:usage |session |weekly )?limit/i.test(tail);
-  const resets = hit ? hit[1] : (tail.match(/resets?\s+(\d{1,2}:\d{2}\s*(?:am|pm)?)/i) || [])[1] || null;
-  return { ok: true, log_present: true, limit_hit: !!hit, approaching, resets_at: resets };
+  const hit = tail.match(/hit your (?:session|weekly) limit([^\n]*?resets?\s+(\d{1,2}:\d{2}\s*(?:am|pm)?))/i);
+  const approachingMatch = tail.match(/approaching (?:your )?(?:usage |session |weekly )?limit([^\n]*?resets?\s+(\d{1,2}:\d{2}\s*(?:am|pm)?))?/i);
+  const resets = hit ? hit[2] : (approachingMatch && approachingMatch[2]) || null;
+  // Сброс в прошлом → сообщение о лимите устарело (лог append-only, старьё живёт
+  // в хвосте сутками). Инцидент 03.09 23:00 МСК: детектор рапортовал «лимит
+  // исчерпан, сброс 19:30» спустя 4 часа после сброса.
+  function staleReset(line) {
+    if (!line) return false;
+    const m = String(line).match(/(\d{1,2}):(\d{2})\s*(am|pm)/i);
+    if (!m) return false;
+    let hour = parseInt(m[1], 10);
+    const minute = parseInt(m[2], 10);
+    const suffix = (m[3] || '').toLowerCase();
+    if (suffix === 'pm' && hour !== 12) hour += 12;
+    if (suffix === 'am' && hour === 12) hour = 0;
+    const reset = new Date();
+    reset.setUTCHours(hour, minute, 0, 0);
+    if (/tomorrow/i.test(String(line))) reset.setUTCDate(reset.getUTCDate() + 1);
+    else if (reset.getTime() > Date.now() + 24 * 3600 * 1000) {
+      // «4:30pm» без am/pm-контекста вчерашнего дня не бывает: если время
+      // дальше чем через сутки — это сброс на следующий цикл, не сегодня.
+    }
+    return reset.getTime() <= Date.now();
+  }
+  const hitStale = hit ? staleReset(hit[1]) : false;
+  const approachingStale = approachingMatch ? staleReset(approachingMatch[1] || '') : !resets ? true : false;
+  return {
+    ok: true, log_present: true,
+    limit_hit: !!hit && !hitStale,
+    approaching: !!approachingMatch && !approachingStale,
+    resets_at: resets,
+    stale_ignored: (hit && hitStale) || (approachingMatch && approachingStale) || false,
+  };
 }
 
 // Архивация текущей сессии: переименовать JSONL в archive/ (НЕ удалять) и
