@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // РАЗОВАЯ настройка — Ашет НЕ вызывает этот скрипт сам. Запускать вручную
-// (`railway run --service ashet-olga node create_avatar.js ...`) один раз,
+// (`railway run --service prototype-ashet node create_avatar.js ...`) один раз,
 // когда есть её фото И получено явное согласие на создание цифрового
 // аватара — HeyGen технически требует подтверждённое согласие для аватара
 // реального человека (условие их платформы, не наша прихоть). Тот же
@@ -28,8 +28,8 @@ async function main() {
 
   const [, , name, photoPath] = process.argv;
   if (!name || !photoPath) {
-    fail('Использование: node create_avatar.js "<имя, напр. Olga>" <фото.jpg>\n' +
-         'Нужно явное согласие Ольги на создание её цифрового аватара ДО запуска.');
+    fail('Использование: node create_avatar.js "<имя, напр. Irina>" <фото.jpg>\n' +
+         'Нужно явное согласие Ирины на создание её цифрового аватара ДО запуска.');
   }
   if (!fs.existsSync(photoPath)) fail('Файл не найден: ' + photoPath);
 
@@ -45,7 +45,8 @@ async function main() {
     fail('Ошибка загрузки фото в HeyGen: ' + String(e.message || e));
   }
   const uploadBody = await uploadRes.json().catch(() => ({}));
-  if (!uploadRes.ok || !uploadBody.asset_id) {
+  const assetId = uploadBody?.data?.asset_id || uploadBody?.asset_id;
+  if (!uploadRes.ok || !assetId) {
     fail(`HeyGen отклонил загрузку фото (${uploadRes.status}): ${JSON.stringify(uploadBody)}`);
   }
 
@@ -58,7 +59,7 @@ async function main() {
       body: JSON.stringify({
         type: 'photo',
         name,
-        file: { type: 'asset_id', asset_id: uploadBody.asset_id },
+        file: { type: 'asset_id', asset_id: assetId },
       }),
     });
   } catch (e) {
@@ -71,7 +72,7 @@ async function main() {
   }
 
   console.log('avatar_id:', avatarId, '(статус:', avatarBody.data.avatar_item.status + ', обучение асинхронное, может занять время)');
-  console.log('Сохрани в Railway: railway variable --service ashet-olga --set "HEYGEN_AVATAR_ID_OLGA=' + avatarId + '"');
+  console.log('Сохрани в Railway: railway variable set "HEYGEN_AVATAR_ID_IRINA=' + avatarId + '" --service prototype-ashet');
 }
 
 main();

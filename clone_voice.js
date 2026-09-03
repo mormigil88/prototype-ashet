@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // РАЗОВАЯ настройка — Ашет НЕ вызывает этот скрипт сам. Запускать вручную
-// (`railway run --service ashet-olga node clone_voice.js ...`) когда собран
-// чистый аудио-образец голоса Ольги. Её собственные голосовые из Telegram
+// (`railway run --service prototype-ashet node clone_voice.js ...`) когда собран
+// чистый аудио-образец голоса Ирины. Её собственные голосовые из Telegram
 // подходят — не нужна студийная запись, важно только отсутствие шума/музыки/
 // посторонних голосов, суммарно 1-3 минуты (если образцов несколько — склей
 // их заранее одним файлом, например через ffmpeg). Нужно также явное
-// согласие Ольги на клонирование ДО запуска — HeyGen проверяет план подписки
+// согласие Ирины на клонирование ДО запуска — HeyGen проверяет план подписки
 // под эту фичу (403 на бесплатном тарифе), согласие — условие их ToS, не
 // формальность. Тот же принцип разового провижининга, что create_avatar.js.
 //
@@ -37,8 +37,8 @@ async function main() {
 
   const [, , name, samplePath] = process.argv;
   if (!name || !samplePath) {
-    fail('Использование: node clone_voice.js "<имя, напр. Olga>" <образец.mp3>\n' +
-         'Нужно явное согласие Ольги на клонирование ДО запуска.');
+    fail('Использование: node clone_voice.js "<имя, напр. Irina>" <образец.mp3>\n' +
+         'Нужно явное согласие Ирины на клонирование ДО запуска.');
   }
   if (!fs.existsSync(samplePath)) fail('Файл не найден: ' + samplePath);
 
@@ -90,7 +90,7 @@ async function main() {
 
     if (status === 'complete') {
       console.log('voice_id:', voiceCloneId);
-      console.log('Сохрани в Railway: railway variable set "HEYGEN_VOICE_ID_OLGA=' + voiceCloneId + '" --service ashet-olga');
+      console.log('Сохрани в Railway: railway variable set "HEYGEN_VOICE_ID_IRINA=' + voiceCloneId + '" --service prototype-ashet');
       return;
     }
     if (status === 'failed') {

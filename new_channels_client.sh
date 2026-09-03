@@ -104,7 +104,11 @@ cp "$TEMPLATE_DIR/edit_image.js" "$CLIENT_DIR/edit_image.js"
 cp "$TEMPLATE_DIR/generate_image.js" "$CLIENT_DIR/generate_image.js"
 cp "$TEMPLATE_DIR/generate_video.js" "$CLIENT_DIR/generate_video.js"
 cp "$TEMPLATE_DIR/compose_video.js" "$CLIENT_DIR/compose_video.js"
+cp "$TEMPLATE_DIR/add_video_text.js" "$CLIENT_DIR/add_video_text.js"
+cp "$TEMPLATE_DIR/burn_word_subtitles.js" "$CLIENT_DIR/burn_word_subtitles.js"
 cp "$TEMPLATE_DIR/generate_avatar_video.js" "$CLIENT_DIR/generate_avatar_video.js"
+cp "$TEMPLATE_DIR/prepare_youtube_avatar_source.js" "$CLIENT_DIR/prepare_youtube_avatar_source.js"
+cp "$TEMPLATE_DIR/create_digital_twin.js" "$CLIENT_DIR/create_digital_twin.js"
 
 if [ ! -f "$CLIENT_DIR/CLAUDE.md" ]; then
   echo "⚠️  $CLIENT_DIR/CLAUDE.md не найден."
@@ -123,7 +127,7 @@ EOF
 
 echo "== 1.5/7: Git (откат версий CLAUDE.md/Dockerfile — без этого правки нечем откатывать) =="
 git -C "$CLIENT_DIR" init -q
-git -C "$CLIENT_DIR" add Dockerfile entrypoint.sh CLAUDE.md companion.js transcribe.js recall_memory.js edit_image.js generate_image.js generate_video.js compose_video.js generate_avatar_video.js .gitignore
+git -C "$CLIENT_DIR" add Dockerfile entrypoint.sh CLAUDE.md companion.js transcribe.js recall_memory.js edit_image.js generate_image.js generate_video.js compose_video.js add_video_text.js burn_word_subtitles.js generate_avatar_video.js prepare_youtube_avatar_source.js create_digital_twin.js .gitignore
 git -C "$CLIENT_DIR" commit -q -m "Начальная версия $CLIENT_SLUG"
 
 echo "== 2/7: Railway-проект =="
