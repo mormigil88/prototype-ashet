@@ -82,4 +82,4 @@ fi
 # remaining bypass confirmation renders asynchronously and requires a separate
 # Enter after choosing y. Keep stdin open afterwards; an EOF would be treated as
 # Ctrl-D/quit by the channels process.
-exec env HOME=/home/node su -p node -c "{ sleep 15; printf 'y\\n'; sleep 45; printf '\\n'; tail -f /dev/null; } | script -qec \"$CLAUDE_CMD\" /dev/null"
+exec env HOME=/home/node su -p node -c "{ sleep 15; printf 'y\\n'; sleep 45; printf '\\n'; tail -f /dev/null; } | script -qec \"$CLAUDE_CMD\" /data/claude-home/claude-stdout.log"

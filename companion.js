@@ -18,6 +18,52 @@ const { URL } = require('url');
 const PORT = process.env.COMPANION_PORT || 8787;
 const SECRET = process.env.COMPANION_SECRET || '';
 const PROJECTS_DIR = '/data/claude-home/projects/-app';
+// stdout claude-процесса — entrypoint пишет typescript сюда вместо /dev/null.
+// Из хвоста этого лога companion детектит лимиты подписки («You've hit your
+// session limit · resets 4:30pm (UTC)», «Approaching … limit») для super_bot.
+const STDOUT_LOG = '/data/claude-home/claude-stdout.log';
+
+// Хвост stdout-лога + детект лимитов. 03.09.2026: инцидент «Kimi молчал полдня —
+// лимит подписки, узнали из логов вручную». Отдаётся супервизору на /limits.
+function getLimits() {
+  let text = '';
+  try {
+    const fd = fs.openSync(STDOUT_LOG, 'r');
+    const size = fs.fstatSync(fd).size;
+    const buf = Buffer.alloc(Math.min(size, 256 * 1024));
+    fs.readSync(fd, buf, 0, buf.length, Math.max(0, size - buf.length));
+    fs.closeSync(fd);
+    text = buf.toString('utf8');
+  } catch (e) {
+    return { ok: true, log_present: false, limit_hit: false, approaching: false, resets_at: null };
+  }
+  const tail = text.split('\n').slice(-120).join('\n');
+  const hit = tail.match(/hit your (?:session|weekly) limit[^\n]*?resets?\s+(\d{1,2}:\d{2}\s*(?:am|pm)?)/i);
+  const approaching = /approaching (?:your )?(?:usage |session |weekly )?limit/i.test(tail);
+  const resets = hit ? hit[1] : (tail.match(/resets?\s+(\d{1,2}:\d{2}\s*(?:am|pm)?)/i) || [])[1] || null;
+  return { ok: true, log_present: true, limit_hit: !!hit, approaching, resets_at: resets };
+}
+
+// Архивация текущей сессии: переименовать JSONL в archive/ (НЕ удалять) и
+// усечь stdout-лог. Только в простое (файл не менялся idle_min минут, по
+// умолчанию 30) — чтобы не оборвать живой диалог. После архивации контейнеру
+// нужен рестарт (entrypoint не найдёт JSONL → начнёт новую сессию).
+function archiveSession(idleMin) {
+  const latest = findLatestTranscript();
+  if (!latest) return { archived: false, reason: 'no_session' };
+  const stat = fs.statSync(latest);
+  const idleMinutes = (Date.now() - stat.mtimeMs) / 60000;
+  if (idleMinutes < idleMin) {
+    return { archived: false, reason: 'active_dialog', idle_minutes: Math.round(idleMinutes) };
+  }
+  const archiveDir = path.join(PROJECTS_DIR, 'archive');
+  fs.mkdirSync(archiveDir, { recursive: true });
+  const base = path.basename(latest, '.jsonl');
+  const stamped = path.join(archiveDir, `${base}.${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`);
+  fs.renameSync(latest, stamped);
+  try { fs.writeFileSync(STDOUT_LOG, ''); } catch (e) {}
+  return { archived: true, from: path.basename(latest), to: stamped, tokens_note: 'см. /status до архивации' };
+}
 
 // Тот же список "чужих" алфавитных диапазонов, что в text_quality.py на платформе —
 // see /Users/andrejorlov/Documents/my-project/neurostaff/text_quality.py
@@ -696,6 +742,37 @@ const server = http.createServer((req, res) => {
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, events }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+    }
+    return;
+  }
+
+  // GET /limits — статус лимитов подписки Claude из stdout-лога (см. getLimits).
+  // Опрашивается super_bot (_channels_usage_limit_job): «approaching» → алерт
+  // админу, «hit limit» → клиенту с временем сброса.
+  if (url.pathname === '/limits') {
+    try {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getLimits()));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+    }
+    return;
+  }
+
+  // POST /admin/archive-session — переименовать текущий JSONL в archive/ и
+  // усечь stdout-лог. Параметр idle_min (по умолчанию 30) — минимальный простой
+  // диалога. Возвращает {archived, from, to} или {archived: false, reason}.
+  // Вызывается super_bot'ом; после архивации нужен рестарт контейнера
+  // (super_bot делает авторедеплой через Railway GraphQL).
+  if (url.pathname === '/admin/archive-session' && req.method === 'POST') {
+    try {
+      const idleMin = parseInt(url.searchParams.get('idle_min') || '30', 10);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, ...archiveSession(idleMin) }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: String(e) }));
