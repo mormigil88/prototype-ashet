@@ -7,10 +7,10 @@
 //     --caption-file /tmp/caption.txt \
 //     --media /tmp/video.mp4 \
 //     --content-type short --media-type video \
-//     --targets youtube:irina \
+//     --targets youtube --language ru \
 //     --auto --source-message-id 12345
 //
-// Цели: instagram:<username>, youtube:irina|sara|both, telegram_channel,
+// Цели: instagram:<username>, youtube[:ru|en], telegram_channel,
 //       telegram_story_personal, telegram_story_channel (без суффикса).
 // Каждую цель — отдельным аргументом --target или список через запятую в --targets.
 //
@@ -46,6 +46,7 @@ const mediaType = arg('media-type') || 'image';
 const auto = arg('auto') === true || String(arg('auto')) === 'true';
 const sourceMessageId = arg('source-message-id');
 const scheduledAt = arg('scheduled-at');
+const contentLanguage = String(arg('language') || '').trim().toLowerCase();
 
 if (!captionFile || typeof captionFile !== 'string') fail('нужен --caption-file <путь>');
 if (!fs.existsSync(captionFile)) fail('файл подписи не найден: ' + captionFile);
@@ -58,7 +59,7 @@ const raw = []
   .concat(process.argv.flatMap((v, i) => (v === '--target' ? [process.argv[i + 1]] : [])))
   .filter(Boolean);
 if (typeof arg('targets') === 'string') raw.push(...String(arg('targets')).split(','));
-if (!raw.length) fail('нужны цели: --target instagram:<username> / youtube:irina|sara|both / telegram_channel (можно несколько)');
+if (!raw.length) fail('нужны цели: --target instagram:<username> / youtube[:ru|en] / telegram_channel (можно несколько)');
 
 const TARGET_RE = /^(instagram|youtube|telegram_channel|telegram_story_personal|telegram_story_channel)(:(.+))?$/i;
 const targets = [];
@@ -73,9 +74,14 @@ for (const item of raw) {
     spec.instagram_target = username.replace(/^@/, '');
   }
   if (platform === 'youtube') {
-    const t = (m[3] || 'irina').trim().toLowerCase();
-    if (!['irina', 'sara', 'both'].includes(t)) fail('youtube-цель: irina | sara | both');
-    spec.youtube_target = t;
+    const routeLanguage = (m[3] || contentLanguage).trim().toLowerCase();
+    if (!['ru', 'en'].includes(routeLanguage)) {
+      fail('для youtube обязателен --language ru|en (или youtube:ru / youtube:en)');
+    }
+    if (contentLanguage && routeLanguage !== contentLanguage) {
+      fail('язык в --language и youtube:<язык> должен совпадать');
+    }
+    spec.content_language = routeLanguage;
   }
   targets.push(spec);
 }
@@ -111,6 +117,7 @@ async function createRequest(imageUrl) {
     caption, image_url: imageUrl, content_type: contentType, media_type: mediaType,
     targets,
   };
+  if (contentLanguage) payload.content_language = contentLanguage;
   if (auto) payload.auto_approve = true;
   if (sourceMessageId && typeof sourceMessageId === 'string') payload.source_message_id = sourceMessageId;
   if (scheduledAt && typeof scheduledAt === 'string') payload.scheduled_at = scheduledAt;
