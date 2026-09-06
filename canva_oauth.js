@@ -18,11 +18,15 @@ const path = require('path');
 const { execFile } = require('child_process');
 
 const SCOPES = [
-  'brandtemplate:read',
+  'brandtemplate:content:read',  // dataset: какие поля есть в макете
   'brandtemplate:content:write', // autofill по бренд-шаблонам
+  'brandtemplate:meta:read',     // список бренд-шаблонов
+  'design:content:read',
   'design:content:write',        // создание дизайна + экспорт
+  'design:meta:read',            // poll GET /autofills/{id} — статус job рендера
   'asset:read',
   'asset:write',                 // загрузка фото/видео Иры как ассетов
+  'profile:read',                // --check (GET /users/me)
 ].join(' ');
 
 function fail(msg) {

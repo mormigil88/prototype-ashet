@@ -43,8 +43,15 @@ function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--check' || a === '--templates' || a === '--fields') args[a.slice(2)] = true;
-    else if (a.startsWith('--')) { args[a.slice(2)] = argv[i + 1]; i++; }
+
+    if (a === '--check' || a === '--templates' || a === '--render') {
+      args[a.slice(2)] = true;
+    } else if (a === '--fields' && argv[i + 1] === '--template') {
+      args.fields = true;
+    } else if (a.startsWith('--')) {
+      args[a.slice(2)] = argv[i + 1];
+      i++;
+    }
   }
   return args;
 }
@@ -215,9 +222,18 @@ async function getDataset(templateId) {
   }
 }
 
+// Баг №4 (06.09): API возвращает dataset в двух видах — либо {dataset: {поле: spec}},
+// либо сам объект полей; поля `dataset.fields` в ответе НЕТ. Единая точка разбора:
+// отдаёт словарь «имя поля → spec» или null, если распарсить не удалось.
+function getDatasetFields(dataset) {
+  const fields = dataset && (dataset.fields || dataset);
+  return fields && typeof fields === 'object' ? fields : null;
+}
+
 function validateFields(dataset, fields) {
-  if (!dataset || !dataset.fields) return;
-  const known = new Set(Object.keys(dataset.fields));
+  const knownFields = getDatasetFields(dataset);
+  if (!knownFields) return;
+  const known = new Set(Object.keys(knownFields));
   const submitted = Object.keys(fields);
   const unknown = submitted.filter(n => !known.has(n));
   if (unknown.length > 0) {
@@ -231,8 +247,13 @@ function validateFields(dataset, fields) {
 
 async function cmdCheck() {
   const me = await apiCall('GET', '/users/me');
-  const team = (me && me.team && me.team.name) || '?';
-  console.log(`OK: авторизован как ${me.display_name || me.id} (team: ${team})`);
+  // Формат ответа: {team_user: {user_id, team_id}} (проверено 04.09) либо развёрнутый
+  // {user: {display_name}, team: {name}} — печатаем то, что есть.
+  const who = (me && me.user && (me.user.display_name || me.user.id))
+    || (me && me.team_user && me.team_user.user_id) || 'unknown';
+  const team = (me && me.team && me.team.name)
+    || (me && me.team_user && me.team_user.team_id) || '?';
+  console.log(`OK: доступ к Canva подтверждён (user: ${who}, team: ${team})`);
 }
 
 async function cmdTemplates() {
@@ -255,11 +276,29 @@ async function cmdTemplates() {
 
 async function cmdFields(templateId) {
   const ds = await getDataset(templateId);
-  if (!ds || !ds.fields) fail('CANVA_FIELDS', 'Dataset пуст или недоступен для этого макета');
-  for (const [name, spec] of Object.entries(ds.fields)) {
+  const dsFields = getDatasetFields(ds);
+  if (!dsFields) fail('CANVA_FIELDS', 'Dataset пуст или недоступен для этого макета');
+  for (const [name, spec] of Object.entries(dsFields)) {
     const extra = spec.asset_id !== undefined ? '' : '';
     console.log(`  ${name}: ${spec.type}${extra}`);
   }
+}
+
+// Баг №5 (06.09): completed-job кладёт дизайн в разных местах в зависимости от
+// версии API: job.design | job.result.autofill_job.design | job.result.design.
+// Не-completed → undefined (poll ждёт дальше); completed без дизайна → честный
+// CANVA_JOB_FAILED вместо 5 минут ожидания и CANVA_TIMEOUT.
+function extractCompletedDesign(b) {
+  const j = (b && b.job) || b;
+  if (!j || j.status !== 'completed') return undefined;
+  const design = (j && j.design)
+    || (j && j.result && j.result.autofill_job && j.result.autofill_job.design)
+    || (j && j.result && j.result.design);
+  if (!design || !design.id) {
+    fail('CANVA_JOB_FAILED',
+      `Autofill завершился (completed), но в ответе нет дизайна: ${JSON.stringify(j).slice(0, 400)}`);
+  }
+  return design;
 }
 
 async function cmdRender(args) {
@@ -285,6 +324,7 @@ async function cmdRender(args) {
 
   console.error(`canva: autofill по шаблону ${templateId}...`);
   const job = await apiCall('POST', '/autofills', {
+    contentType: 'application/json',
     body: {
       type: 'create_from_brand_template',
       brand_template_id: templateId,
@@ -297,15 +337,15 @@ async function cmdRender(args) {
 
   const design = await poll(`/autofills/${jobId}`, (b) => {
     const j = (b && b.job) || b;
-    if (j && j.status === 'completed') return j.design;
     if (j && j.status === 'failed') fail('CANVA_JOB_FAILED', `Autofill упал: ${JSON.stringify(j.error || j).slice(0, 400)}`);
-    return undefined;
-  }, 120_000, 'autofill');
+    // 300с: у Canva autofill бывает дольше 2 минут — раньше упирались в таймаут.
+    return extractCompletedDesign(b);
+  }, 300_000, 'autofill');
   const designId = design && design.id;
   if (!designId) fail('CANVA_JOB_FAILED', `В job нет design.id: ${JSON.stringify(design).slice(0, 300)}`);
   console.error(`canva: дизайн создан ${designId}, экспорт в ${format}...`);
 
-  const exportJob = await apiCall('POST', '/exports', { body: { design_id: designId, format } });
+  const exportJob = await apiCall('POST', '/exports', { contentType: 'application/json', body: { design_id: designId, format } });
   const exportId = (exportJob && exportJob.job && exportJob.job.id) || (exportJob && exportJob.id);
   if (!exportId) fail('CANVA_API', `Неожиданный ответ export: ${JSON.stringify(exportJob).slice(0, 300)}`);
 
@@ -341,8 +381,8 @@ async function main() {
   try {
     if (args.check) return await cmdCheck();
     if (args.templates) return await cmdTemplates();
-    if (args.fields) return await cmdFields(args.template);
     if (args.render) return await cmdRender(args);
+    if (args.fields) return await cmdFields(args.template);
     console.error('Использование:\n' +
       '  node canva_render.js --check\n' +
       '  node canva_render.js --templates\n' +
@@ -355,4 +395,8 @@ async function main() {
   }
 }
 
-main();
+// require() модуля безопасен (главную не запускает) — используется тестами.
+if (require.main === module) {
+  main();
+}
+module.exports = { parseArgs, getDatasetFields, extractCompletedDesign };

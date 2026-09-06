@@ -50,6 +50,7 @@ COPY transcribe.js /app/transcribe.js
 COPY edit_image.js /app/edit_image.js
 COPY publish_request.js /app/publish_request.js
 COPY canva_render.js /app/canva_render.js
+COPY canva_link.js /app/canva_link.js
 COPY segment_person.py /app/segment_person.py
 COPY preserve_person.py /app/preserve_person.py
 COPY segment_face.py /app/segment_face.py
