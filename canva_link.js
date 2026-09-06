@@ -16,9 +16,11 @@
 //   node canva_link.js --url "<текст сообщения или сама ссылка>" \
 //        --user <tg_user_id> --chat <tg_chat_id>
 //
-// Реестр (CANVA_DESIGNS_FILE, по умолчанию /data/canva_designs.json) — массив
-// записей: { design_id, edit_url, title, source, telegram_user_id,
+// Реестр (CANVA_DESIGNS_FILE, по умолчанию /data/canva/canva_designs.json) —
+// массив записей: { design_id, edit_url, title, source, telegram_user_id,
 // telegram_chat_id, registered_at, last_confirmed_at, status }.
+// Директория /data/canva создаётся и отдаётся node в entrypoint.sh (сам /data
+// root-owned — писать реестр прямо в /data процесс не может).
 //
 // Токены: ТОЛЬКО читаем access-токен из файла токенов (CANVA_TOKENS_FILE).
 // Refresh здесь НЕ делаем намеренно: refresh-токен Canva одноразовый, и два
@@ -44,7 +46,7 @@ const CANVA_DESIGN_RE = /https?:\/\/(?:www\.)?canva\.com\/design\/([A-Za-z0-9]+)
 // между кейсами без пересоздания модуля.
 const apiBase = () => process.env.CANVA_API_BASE || 'https://api.canva.com/rest/v1';
 const tokensFile = () => process.env.CANVA_TOKENS_FILE || '/data/canva_tokens.json';
-const designsFile = () => process.env.CANVA_DESIGNS_FILE || '/data/canva_designs.json';
+const designsFile = () => process.env.CANVA_DESIGNS_FILE || '/data/canva/canva_designs.json';
 
 class CanvaFail extends Error {
   constructor(code, message) {

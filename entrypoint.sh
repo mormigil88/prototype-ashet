@@ -1,8 +1,11 @@
 #!/bin/bash
 set -e
 
-mkdir -p /data/root-dotclaude /data/claude-home /data/memory
-chown -R node:node /data/root-dotclaude /data/claude-home /data/memory
+# /data/canva — реестр Canva-ссылок (canva_link.js пишет из-под node; сам /data
+# root-owned, поэтому директория создаётся и отдаётся node здесь, до su).
+mkdir -p /data/root-dotclaude /data/claude-home /data/memory /data/canva
+chown -R node:node /data/root-dotclaude /data/claude-home /data/memory /data/canva
+chmod 700 /data/canva
 ln -sfn /data/root-dotclaude /home/node/.claude
 chown -h node:node /home/node/.claude
 
