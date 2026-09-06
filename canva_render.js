@@ -347,7 +347,12 @@ async function cmdRender(args) {
   if (!designId) fail('CANVA_JOB_FAILED', `В job нет design.id: ${JSON.stringify(design).slice(0, 300)}`);
   console.error(`canva: дизайн создан ${designId}, экспорт в ${format}...`);
 
-  const exportJob = await apiCall('POST', '/exports', { contentType: 'application/json', body: { design_id: designId, format } });
+  // format должен быть объектом {type}: строка даёт 400 invalid_field "'type' must
+  // not be null" (латентный баг вскрылся 06.09 — раньше до экспорта не доходили).
+  const exportJob = await apiCall('POST', '/exports', {
+    contentType: 'application/json',
+    body: { design_id: designId, format: { type: format === 'video' ? 'mp4' : format } },
+  });
   const exportId = (exportJob && exportJob.job && exportJob.job.id) || (exportJob && exportJob.id);
   if (!exportId) fail('CANVA_API', `Неожиданный ответ export: ${JSON.stringify(exportJob).slice(0, 300)}`);
 
