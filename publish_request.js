@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Публикация готового артефакта через approval-gateway (Toto) — вариант А.
-// Один вызов = загрузка медиа + заявка (возможно, мульти-цель) + ответ.
+// Kimi передаёт готовый артефакт Toto на сервере Иры. Toto — единственный
+// исполнитель: в нём лежат Publer и Google OAuth, Kimi ключей соцсетей не знает.
 //
 // Использование (из CLAUDE.md, «Публикация»):
 //   node /app/publish_request.js \
@@ -32,12 +32,11 @@ function arg(name) {
   return (v === undefined || v.startsWith('--')) ? true : v;
 }
 
-const UPLOAD_URL = process.env.PUBLISH_GATEWAY_URL_UPLOAD || '';
-const GATEWAY_URL = process.env.PUBLISH_GATEWAY_URL || '';
-const SECRET = process.env.PUBLISH_GATEWAY_SECRET || '';
+const TOTO_URL = (process.env.TOTO_PUBLISH_URL || '').replace(/\/$/, '');
+const SECRET = process.env.TOTO_PUBLISH_SECRET || '';
 const CLIENT_SLUG = process.env.CLIENT_SLUG || 'ashet-irina';
 
-if (!GATEWAY_URL || !SECRET) fail('PUBLISH_GATEWAY_URL / PUBLISH_GATEWAY_SECRET не заданы в окружении');
+if (!TOTO_URL || !SECRET) fail('TOTO_PUBLISH_URL / TOTO_PUBLISH_SECRET не заданы в окружении');
 
 const captionFile = arg('caption-file');
 const mediaPath = arg('media');
@@ -47,6 +46,8 @@ const auto = arg('auto') === true || String(arg('auto')) === 'true';
 const sourceMessageId = arg('source-message-id');
 const scheduledAt = arg('scheduled-at');
 const contentLanguage = String(arg('language') || '').trim().toLowerCase();
+const trial = arg('trial') === true || String(arg('trial')) === 'true';
+const trialReel = arg('trial-reel') === true || String(arg('trial-reel')) === 'true';
 
 if (!captionFile || typeof captionFile !== 'string') fail('нужен --caption-file <путь>');
 if (!fs.existsSync(captionFile)) fail('файл подписи не найден: ' + captionFile);
@@ -86,16 +87,15 @@ for (const item of raw) {
   targets.push(spec);
 }
 
-// ── Шаг 1: загрузка медиа (если есть) ────────────────────────────────────────
+// ── Шаг 1: передача медиа Toto (сервер Иры) ───────────────────────────────────
 async function uploadMedia() {
   if (!mediaPath || typeof mediaPath !== 'string') return '';
   if (!fs.existsSync(mediaPath)) fail('медиа-файл не найден: ' + mediaPath);
-  if (!UPLOAD_URL) fail('PUBLISH_GATEWAY_URL_UPLOAD не задан — некуда грузить медиа');
   const body = fs.readFileSync(mediaPath);
-  const res = await fetch(UPLOAD_URL, {
+  const res = await fetch(`${TOTO_URL}/publisher/media`, {
     method: 'POST',
     headers: {
-      'X-Gateway-Secret': SECRET,
+      'X-Toto-Publish-Secret': SECRET,
       'X-Filename': path.basename(mediaPath),
       'Content-Type': 'application/octet-stream',
       'Content-Length': body.length,
@@ -105,26 +105,26 @@ async function uploadMedia() {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { fail(`upload: HTTP ${res.status}, ответ не JSON: ${text.slice(0, 200)}`); }
-  if (!res.ok || !data.ok || !data.url) fail(`upload: HTTP ${res.status} ${JSON.stringify(data).slice(0, 300)}`);
-  return data.url;
+  if (!res.ok || !data.ok || !data.media_url) fail(`upload: HTTP ${res.status} ${JSON.stringify(data).slice(0, 300)}`);
+  return { url: data.media_url, filename: data.filename || path.basename(mediaPath) };
 }
 
-// ── Шаг 2: заявка ────────────────────────────────────────────────────────────
-async function createRequest(imageUrl) {
+// ── Шаг 2: команда Toto ──────────────────────────────────────────────────────
+async function publishViaToto(media) {
+  if (!contentLanguage || !['ru', 'en'].includes(contentLanguage)) fail('для публикации нужен --language ru|en');
+  const platforms = [...new Set(targets.map(target => target.platform))];
   const payload = {
-    client_slug: CLIENT_SLUG,
-    platform: targets[0].platform, // для совместимости; канонические цели — в targets[]
-    caption, image_url: imageUrl, content_type: contentType, media_type: mediaType,
-    targets,
+    client_slug: CLIENT_SLUG, caption, media_url: media.url, filename: media.filename,
+    content_type: contentType, media_type: mediaType, language: contentLanguage, platforms,
+    source_message_id: sourceMessageId || null,
+    trial: trial,
+    trial_reel: trialReel,
   };
-  if (contentLanguage) payload.content_language = contentLanguage;
-  if (auto) payload.auto_approve = true;
-  if (sourceMessageId && typeof sourceMessageId === 'string') payload.source_message_id = sourceMessageId;
   if (scheduledAt && typeof scheduledAt === 'string') payload.scheduled_at = scheduledAt;
 
-  const res = await fetch(GATEWAY_URL, {
+  const res = await fetch(`${TOTO_URL}/publisher/publish`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Gateway-Secret': SECRET },
+    headers: { 'Content-Type': 'application/json', 'X-Toto-Publish-Secret': SECRET },
     body: JSON.stringify(payload),
   });
   const text = await res.text();
@@ -132,19 +132,15 @@ async function createRequest(imageUrl) {
   try { data = JSON.parse(text); } catch { fail(`gateway: HTTP ${res.status}, ответ не JSON: ${text.slice(0, 200)}`); }
   if (!res.ok || !data.ok) {
     // auto_publish_disabled и другие отказы гейта — не выдумываем статус.
-    fail(`gateway: HTTP ${res.status} ${JSON.stringify(data).slice(0, 400)}`);
+    fail(`Toto: HTTP ${res.status} ${JSON.stringify(data).slice(0, 400)}`);
   }
   return data;
 }
 
 (async () => {
-  const imageUrl = await uploadMedia();
-  const result = await createRequest(imageUrl);
-  // Короткие человекочитаемые строки поверх JSON — чтобы Kimi сразу пересказал.
-  for (const r of result.results || []) {
-    const mark = r.duplicate ? 'DUPLICATE' : (r.ok ? (r.status || 'created').toUpperCase() : 'ERROR');
-    console.log(`${mark} ${r.target || r.platform}${r.request_id ? ' (заявка ' + r.request_id + ')' : ''}${r.error ? ' — ' + r.error : ''}`);
-  }
+  const media = await uploadMedia();
+  if (!media) fail('для Toto нужен локальный медиафайл');
+  const result = await publishViaToto(media);
   console.log(JSON.stringify(result, null, 2));
   process.exit(0);
 })().catch((e) => fail(String(e && e.message || e)));
