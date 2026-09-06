@@ -148,6 +148,20 @@ test('ссылка без www и без завершающего слэша то
   assert.strictEqual(extractDesignId(''), null);
 });
 
+test('ID с подчёркиванием и дефисом распознаётся (реальный формат Canva)', () => {
+  // Живой кейс 06.09: DAHUVbQF_Tc — [A-Za-z0-9] без '_' молча не матчил.
+  assert.strictEqual(
+    extractDesignId('https://www.canva.com/design/DAHUVbQF_Tc/edit'),
+    'DAHUVbQF_Tc',
+  );
+  assert.strictEqual(extractDesignId('https://www.canva.com/design/DAF-with-dash/view'), 'DAF-with-dash');
+  assert.strictEqual(
+    extractDesignId('https://www.canva.com/design/DAHUVbQF_Tc/view?feature=share'),
+    'DAHUVbQF_Tc',
+    'после ID с _ должен корректно взяться хвост /view?...',
+  );
+});
+
 // ---------- 3. некорректный URL ----------
 
 test('некорректный URL: CANVA_NO_URL, API не вызывается, ничего не сохранено', async (t) => {
