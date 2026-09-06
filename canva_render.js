@@ -284,13 +284,15 @@ async function cmdFields(templateId) {
   }
 }
 
-// Баг №5 (06.09): completed-job кладёт дизайн в разных местах в зависимости от
-// версии API: job.design | job.result.autofill_job.design | job.result.design.
-// Не-completed → undefined (poll ждёт дальше); completed без дизайна → честный
-// CANVA_JOB_FAILED вместо 5 минут ожидания и CANVA_TIMEOUT.
+// Баг №5 (06.09): autofill-job при успехе приходит со статусом "success"
+// (проверено в проде 06.09, job 1692d17e), а не "completed" — старый код его
+// никогда не матчил и уходил в CANVA_TIMEOUT. Дизайн тоже лежит не в job.design,
+// а в одном из: job.design | job.result.autofill_job.design | job.result.design
+// (в проде реально — job.result.design). Не-успешный статус → undefined (poll
+// ждёт дальше); успех без дизайна → честный CANVA_JOB_FAILED, не таймаут.
 function extractCompletedDesign(b) {
   const j = (b && b.job) || b;
-  if (!j || j.status !== 'completed') return undefined;
+  if (!j || (j.status !== 'completed' && j.status !== 'success')) return undefined;
   const design = (j && j.design)
     || (j && j.result && j.result.autofill_job && j.result.autofill_job.design)
     || (j && j.result && j.result.design);

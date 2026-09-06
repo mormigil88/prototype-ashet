@@ -77,9 +77,20 @@ test('extractCompletedDesign: design в job.result.design (без обёртки
   assert.strictEqual(d.id, 'DAFdesign3');
 });
 
-test('extractCompletedDesign: не completed → undefined (poll ждёт дальше)', () => {
+test('extractCompletedDesign: прод-формат — status "success" + result.design', () => {
+  // Реальный ответ API 06.09: {job:{id,status:"success",result:{type,design,trial_information}}}
+  const d = extractCompletedDesign({
+    job: { id: 'job1', status: 'success', result: { type: 'autofill', design: { id: 'DAHUVbQF_Tc' } } },
+  });
+  assert.strictEqual(d.id, 'DAHUVbQF_Tc');
+  const d2 = extractCompletedDesign({ job: { status: 'success', design: { id: 'DAFviaJobDesign' } } });
+  assert.strictEqual(d2.id, 'DAFviaJobDesign');
+});
+
+test('extractCompletedDesign: не completed/success → undefined (poll ждёт дальше)', () => {
   assert.strictEqual(extractCompletedDesign({ job: { status: 'running' } }), undefined);
   assert.strictEqual(extractCompletedDesign({ job: { status: 'pending' } }), undefined);
+  assert.strictEqual(extractCompletedDesign({ job: { status: 'failed' } }), undefined);
   assert.strictEqual(extractCompletedDesign(null), undefined);
 });
 
