@@ -31,6 +31,16 @@ function arg(name) {
   const v = process.argv[i + 1];
   return (v === undefined || v.startsWith('--')) ? true : v;
 }
+function args(name) {
+  const values = [];
+  for (let i = 0; i < process.argv.length; i += 1) {
+    if (process.argv[i] !== '--' + name) continue;
+    const value = process.argv[i + 1];
+    if (value === undefined || value.startsWith('--')) fail(`нужно значение для --${name}`);
+    values.push(value);
+  }
+  return values;
+}
 
 const TOTO_URL = (process.env.TOTO_PUBLISH_URL || '').replace(/\/$/, '');
 const SECRET = process.env.TOTO_PUBLISH_SECRET || '';
@@ -39,7 +49,7 @@ const CLIENT_SLUG = process.env.CLIENT_SLUG || 'ashet-irina';
 if (!TOTO_URL || !SECRET) fail('TOTO_PUBLISH_URL / TOTO_PUBLISH_SECRET не заданы в окружении');
 
 const captionFile = arg('caption-file');
-const mediaPath = arg('media');
+const mediaPaths = args('media');
 const contentType = arg('content-type') || 'post';
 const mediaType = arg('media-type') || 'image';
 const auto = arg('auto') === true || String(arg('auto')) === 'true';
@@ -53,6 +63,14 @@ if (!captionFile || typeof captionFile !== 'string') fail('нужен --caption-
 if (!fs.existsSync(captionFile)) fail('файл подписи не найден: ' + captionFile);
 const caption = fs.readFileSync(captionFile, 'utf8').trim();
 if (!caption) fail('файл подписи пуст');
+if (!mediaPaths.length) fail('нужен хотя бы один --media <путь>');
+if (contentType === 'carousel') {
+  if (mediaPaths.length < 2 || mediaPaths.length > 10) fail('Instagram-карусель требует от 2 до 10 изображений.');
+  if (mediaType !== 'image') fail('Instagram-карусель пока поддерживает только изображения.');
+  if (trialReel) fail('Trial Reel доступен только для Instagram Reel.');
+} else if (mediaPaths.length !== 1) {
+  fail('Для обычного поста, Reel или Short укажи ровно один --media.');
+}
 
 // ── Разбор целей ─────────────────────────────────────────────────────────────
 // Поддерживаем и повторные --target, и один --targets "a,b,c".
@@ -86,35 +104,42 @@ for (const item of raw) {
   }
   targets.push(spec);
 }
+if (contentType === 'carousel' && targets.some(target => target.platform === 'youtube')) {
+  fail('Instagram-карусель нельзя отправить в YouTube.');
+}
 
 // ── Шаг 1: передача медиа Toto (сервер Иры) ───────────────────────────────────
 async function uploadMedia() {
-  if (!mediaPath || typeof mediaPath !== 'string') return '';
-  if (!fs.existsSync(mediaPath)) fail('медиа-файл не найден: ' + mediaPath);
-  const body = fs.readFileSync(mediaPath);
-  const res = await fetch(`${TOTO_URL}/publisher/media`, {
-    method: 'POST',
-    headers: {
-      'X-Toto-Publish-Secret': SECRET,
-      'X-Filename': path.basename(mediaPath),
-      'Content-Type': 'application/octet-stream',
-      'Content-Length': body.length,
-    },
-    body,
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { fail(`upload: HTTP ${res.status}, ответ не JSON: ${text.slice(0, 200)}`); }
-  if (!res.ok || !data.ok || !data.media_url) fail(`upload: HTTP ${res.status} ${JSON.stringify(data).slice(0, 300)}`);
-  return { url: data.media_url, filename: data.filename || path.basename(mediaPath) };
+  const uploaded = [];
+  for (const mediaPath of mediaPaths) {
+    if (!fs.existsSync(mediaPath)) fail('медиа-файл не найден: ' + mediaPath);
+    const body = fs.readFileSync(mediaPath);
+    const res = await fetch(`${TOTO_URL}/publisher/media`, {
+      method: 'POST',
+      headers: {
+        'X-Toto-Publish-Secret': SECRET,
+        'X-Filename': path.basename(mediaPath),
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': body.length,
+      },
+      body,
+    });
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch { fail(`upload: HTTP ${res.status}, ответ не JSON: ${text.slice(0, 200)}`); }
+    if (!res.ok || !data.ok || !data.media_url) fail(`upload: HTTP ${res.status} ${JSON.stringify(data).slice(0, 300)}`);
+    uploaded.push({ url: data.media_url, filename: data.filename || path.basename(mediaPath) });
+  }
+  return uploaded;
 }
 
 // ── Шаг 2: команда Toto ──────────────────────────────────────────────────────
-async function publishViaToto(media) {
+async function publishViaToto(mediaItems) {
   if (!contentLanguage || !['ru', 'en'].includes(contentLanguage)) fail('для публикации нужен --language ru|en');
   const platforms = [...new Set(targets.map(target => target.platform))];
   const payload = {
-    client_slug: CLIENT_SLUG, caption, media_url: media.url, filename: media.filename,
+    client_slug: CLIENT_SLUG, caption, media_url: mediaItems[0].url, filename: mediaItems[0].filename,
+    media_items: mediaItems,
     content_type: contentType, media_type: mediaType, language: contentLanguage, platforms,
     source_message_id: sourceMessageId || null,
     trial: trial,
@@ -138,9 +163,8 @@ async function publishViaToto(media) {
 }
 
 (async () => {
-  const media = await uploadMedia();
-  if (!media) fail('для Toto нужен локальный медиафайл');
-  const result = await publishViaToto(media);
+  const mediaItems = await uploadMedia();
+  const result = await publishViaToto(mediaItems);
   console.log(JSON.stringify(result, null, 2));
   process.exit(0);
 })().catch((e) => fail(String(e && e.message || e)));

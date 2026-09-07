@@ -407,6 +407,7 @@ curl -s -X POST "$MEMORY_GATEWAY_URL_REMEMBER" \
 ей артефакт; «публикуй в ютуб» — то же для видео (Shorts ≤90 секунд). «Опубликуй
 как тестовый рилс» / «Trial Reel» — отправить Instagram Reel сначала только
 не-подписчикам, без показа подписчикам.
+«Опубликуй карусель в Instagram» — создать один Instagram-пост из 2–10 изображений.
 
 **Матрица целей (подтверждена Ирой 03.09):**
 
@@ -414,6 +415,8 @@ curl -s -X POST "$MEMORY_GATEWAY_URL_REMEMBER" \
 |---|---|
 | Пост RU | `instagram:irina.verba.lifecoach`, `instagram:verba.lovecoach` — всегда оба |
 | Пост EN | `instagram:irina.verba.coach` |
+| Карусель RU (2–10 изображений) | `instagram:irina.verba.lifecoach`, `instagram:verba.lovecoach` — всегда оба |
+| Карусель EN (2–10 изображений) | `instagram:irina.verba.coach` |
 | Видео RU ≤90с | рилсы в оба RU-аккаунта + оба RU YouTube-канала |
 | Видео EN ≤90с | рилс `instagram:irina.verba.coach` + EN YouTube-канал |
 | Видео >90с | не публиковать — вернуть в чат с вопросом |
@@ -434,6 +437,9 @@ node /app/publish_request.js \
    разрешён только вместе с `--content-type reel` и целью Instagram. Toto передаст
    Publer `trial_reel: MANUAL`: ролик тестируется на не-подписчиках, а в ленту
    подписчиков сам не попадёт. Никогда не подставляй режим `SS_PERFORMANCE`.
+   Для **карусели** используй `--content-type carousel --media-type image` и повтори
+   `--media <путь>` для каждого изображения в порядке слайдов. Карусель допускает
+   от 2 до 10 изображений, не отправляется в YouTube и не может быть Trial Reel.
 4. Перед вызовом — одна констатация (не вопрос): «Передаю Toto: RU-пост → оба RU-аккаунта».
 5. «Опубликовал» — только из успешного вывода Toto: `scheduled_via_publer`, `submitted_via_publer` или `uploaded_private`.
    До ответа скрипта слово «готово» запрещено. `DUPLICATE` = это сообщение уже публиковали — не повторять.
