@@ -1,6 +1,6 @@
 const { validateTranslatedCaptions } = require('./subtitle_helpers.js');
 
-const DEFAULT_MODEL = 'openai/gpt-oss-20b:free';
+const DEFAULT_MODEL = 'openai/gpt-oss-20b';
 const ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
 
 function extractJson(body) {
