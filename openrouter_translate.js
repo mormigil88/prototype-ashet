@@ -46,7 +46,9 @@ ${captions.map(c => `${c.id}. "${c.source_ru}" (${c.start}s – ${c.end}s)`).joi
   }
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status} при запросе к OpenRouter`);
+    const bodyText = await response.text();
+    const safeBody = bodyText.slice(0, 1000);
+    throw new Error(`HTTP ${response.status} при запросе к OpenRouter: ${safeBody}`);
   }
 
   let data;

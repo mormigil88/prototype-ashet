@@ -71,6 +71,17 @@ test('HTTP 429 — ошибка', async () => {
   );
 });
 
+test('HTTP 404 — ошибка содержит и статус, и текст тела ответа', async () => {
+  const errorBody = '{"error":{"code":"model_not_found","message":"Model not found"}}';
+  await assert.rejects(
+    () => translateCaptions(source(1), {
+      apiKey: 'test-key',
+      fetchImpl: fakeFetch({ status: 404, body: errorBody }),
+    }),
+    /HTTP 404.*model_not_found/,
+  );
+});
+
 test('ответ без choices — ошибка', async () => {
   await assert.rejects(
     () => translateCaptions(source(1), {
