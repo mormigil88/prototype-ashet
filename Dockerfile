@@ -1,3 +1,4 @@
+# force rebuild: 2026-09-09
 FROM node:20-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
