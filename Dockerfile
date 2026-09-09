@@ -63,7 +63,7 @@ COPY add_video_text.js /app/add_video_text.js
 COPY burn_word_subtitles.js /app/burn_word_subtitles.js
 COPY subtitle_helpers.js /app/subtitle_helpers.js
 COPY burn_translated_subtitles.js /app/burn_translated_subtitles.js
-COPY openrouter_translate.js /app/openrouter_translate.js
+COPY prepare_translated_subtitles.js /app/prepare_translated_subtitles.js
 COPY generate_avatar_video.js /app/generate_avatar_video.js
 COPY clone_voice.js /app/clone_voice.js
 COPY create_avatar.js /app/create_avatar.js
