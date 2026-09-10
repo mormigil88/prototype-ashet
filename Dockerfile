@@ -42,6 +42,7 @@ ENV CLAUDE_CODE_RESUME_TOKEN_THRESHOLD="999999999"
 # node:bookworm-slim уже включает пользователя "node" (uid 1000), используем его.
 
 WORKDIR /app
+RUN npm install --no-save @aws-sdk/client-s3@3.1120.0
 # CLAUDE.base.md — исходный системный промпт, entrypoint.sh копирует его в
 # CLAUDE.md на каждом старте, до дописывания памяти прошлых сессий.
 COPY CLAUDE.md /app/CLAUDE.base.md
@@ -65,6 +66,7 @@ COPY subtitle_helpers.js /app/subtitle_helpers.js
 COPY burn_translated_subtitles.js /app/burn_translated_subtitles.js
 COPY prepare_translated_subtitles.js /app/prepare_translated_subtitles.js
 COPY generate_avatar_video.js /app/generate_avatar_video.js
+COPY media_archive.js /app/media_archive.js
 COPY clone_voice.js /app/clone_voice.js
 COPY create_avatar.js /app/create_avatar.js
 COPY prepare_youtube_avatar_source.js /app/prepare_youtube_avatar_source.js

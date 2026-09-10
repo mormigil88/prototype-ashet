@@ -15,6 +15,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { archive } = require('./media_archive');
+
 const API_KEY = process.env.HEYGEN_API_KEY;
 let twinConfig = {};
 try {
@@ -113,6 +115,21 @@ async function main() {
       const buf = Buffer.from(await videoRes.arrayBuffer());
       const outputPath = path.join(os.tmpdir(), `ashet_avatar_${Date.now()}_${process.pid}.mp4`);
       fs.writeFileSync(outputPath, buf);
+
+      const ar = await archive(outputPath, {
+        provider: 'heygen',
+        providerJobId: videoId,
+        clientSlug: process.env.CLIENT_SLUG || 'ashet-irina',
+        sourceUrl: videoUrl,
+        script,
+        aspectRatio: ratio,
+        contentType: 'video/mp4',
+      });
+      if (!ar.ok || ar.status !== 'done') {
+        console.error(`Archive failed: ${ar.reason} (videoId=${videoId})`);
+        fail('R2 archive error');
+      }
+
       console.log(outputPath);
       return;
     }

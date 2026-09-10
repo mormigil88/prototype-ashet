@@ -12,6 +12,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { archive } = require('./media_archive');
+
 const API_BASE = 'https://api.dev.runwayml.com/v1';
 const API_KEY = process.env.RUNWAY_API_KEY;
 const RUNWAY_VERSION = '2024-11-06';
@@ -116,6 +118,21 @@ async function main() {
       const buf = Buffer.from(await videoRes.arrayBuffer());
       const outputPath = path.join(os.tmpdir(), `ashet_video_${Date.now()}_${process.pid}.mp4`);
       fs.writeFileSync(outputPath, buf);
+
+      const ar = await archive(outputPath, {
+        provider: 'runway',
+        providerJobId: taskId,
+        clientSlug: process.env.CLIENT_SLUG || 'ashet-irina',
+        sourceUrl: videoUrl,
+        script: promptText,
+        aspectRatio: ratio,
+        contentType: 'video/mp4',
+      });
+      if (!ar.ok || ar.status !== 'done') {
+        console.error(`Archive failed: ${ar.reason} (taskId=${taskId})`);
+        fail('R2 archive error');
+      }
+
       console.log(outputPath);
       return;
     }
