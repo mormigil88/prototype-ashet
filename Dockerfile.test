@@ -1,0 +1,26 @@
+# Dockerfile для запуска unit-тестов companion.js и связанных модулей.
+# Не деплоится — только `docker build -f Dockerfile.test . && docker run --rm ...`
+FROM node:20-bookworm-slim
+
+WORKDIR /app
+
+# Копируем и устанавливаем зависимости приложения (для require)
+COPY package.json /app/
+RUN npm install --silent 2>/dev/null || true
+
+# Копируем исходники и тесты
+COPY claude_auth_recovery.js /app/claude_auth_recovery.js
+COPY companion.js /app/companion.js
+COPY transcribe.js /app/transcribe.js
+COPY edit_image.js /app/edit_image.js
+COPY canva_render.js /app/canva_render.js
+COPY canva_link.js /app/canva_link.js
+COPY media_archive.js /app/media_archive.js
+COPY openrouter_translate.js /app/openrouter_translate.js
+COPY subtitle_helpers.js /app/subtitle_helpers.js
+COPY tests/ /app/tests/
+
+# Тесты companion.js требуют несколько JSONL-файлов — создаём минимальный набор
+RUN mkdir -p /data /data/transcripts /data/claude-home /tmp
+
+ENTRYPOINT ["node", "test/*.test.js", "--test-name-pattern"]

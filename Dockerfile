@@ -47,6 +47,7 @@ RUN npm install --no-save @aws-sdk/client-s3@3.1120.0
 # CLAUDE.md на каждом старте, до дописывания памяти прошлых сессий.
 COPY CLAUDE.md /app/CLAUDE.base.md
 COPY companion.js /app/companion.js
+COPY claude_auth_recovery.js /app/claude_auth_recovery.js
 COPY transcribe.js /app/transcribe.js
 COPY edit_image.js /app/edit_image.js
 COPY publish_request.js /app/publish_request.js
@@ -71,6 +72,7 @@ COPY clone_voice.js /app/clone_voice.js
 COPY create_avatar.js /app/create_avatar.js
 COPY prepare_youtube_avatar_source.js /app/prepare_youtube_avatar_source.js
 COPY create_digital_twin.js /app/create_digital_twin.js
+COPY heygen_avatar_registry.js /app/heygen_avatar_registry.js
 COPY recall_memory.js /app/recall_memory.js
 RUN chown -R node:node /app
 
