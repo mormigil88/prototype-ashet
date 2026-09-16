@@ -43,8 +43,8 @@ const path = require('path');
 
 const API_KEY         = process.env.HEYGEN_API_KEY;
 const API_BASE        = 'https://api.heygen.com';
-const LEGACY_CONFIG    = process.env.HEYGEN_IRINA_LEGACY || '/data/heygen_irina_digital_twin.json';
-const REGISTRY_DIR    = process.env.HEYGEN_REGISTRY_DIR  || '/data/heygen';
+const LEGACY_CONFIG   = process.env.HEYGEN_IRINA_LEGACY || '/data/heygen_irina_digital_twin.json';
+const REGISTRY_DIR   = process.env.HEYGEN_REGISTRY_DIR  || '/data/heygen';
 const REGISTRY_FILE   = path.join(REGISTRY_DIR, 'avatar_registry.json');
 const DEFAULT_ALIAS   = 'основной';
 
@@ -177,6 +177,31 @@ function migrateFromLegacy(registry) {
 // ─── Preflight: получаем живые аватары из HeyGen ─────────────────────────────
 
 /**
+ * Нормализация status из HeyGen v2 API → внутренний формат реестра.
+ *
+ * HeyGen v2 возвращает:
+ *   "training"        — Digital Twin ещё обучается
+ *   "available"       — готов к использованию
+ *   "unavailable"    — временно недоступен
+ *   "error"           — ошибка при обучении
+ *   (отсутствует)     — аватар есть в списке = available/active
+ *
+ * Реестр использует: "active" | "inactive" | "training" | "pending_consent"
+ */
+function normalizeStatus(hgStatus) {
+  // Отсутствие поля = аватар в списке HeyGen = available
+  if (hgStatus === undefined || hgStatus === null || hgStatus === '') return 'active';
+  switch (String(hgStatus).toLowerCase()) {
+    case 'available':  return 'active';    // HeyGen v2: готов к использованию
+    case 'active':   return 'active';    // HeyGen v1 / совместимость
+    case 'training': return 'training';  // Digital Twin ещё обучается
+    case 'unavailable':
+    case 'error':    return 'inactive';  // временно недоступен / ошибка
+    default:         return 'inactive';
+  }
+}
+
+/**
  * Возвращает массив { avatar_id, name, status, type } из HeyGen.
  * Выбрасывает HeyGenFail при ошибке.
  */
@@ -195,7 +220,7 @@ async function fetchHeyGenAvatars() {
   return avatars.map(a => ({
     avatar_id: a.avatar_id ?? a.id,
     name:      a.name      ?? '(без имени)',
-    status:    a.status    ?? 'unknown',
+    status:    normalizeStatus(a.status),
     type:      a.type      ?? 'unknown',
   }));
 }
@@ -338,7 +363,7 @@ async function selectAvatar({ preferAlias = null, doPreflight = true, interactiv
         alias: DEFAULT_ALIAS,
         name:  p.name,
         type:  p.type || 'digital_twin',
-        status: p.status === 'active' ? 'active' : 'inactive',
+        status: normalizeStatus(p.status),
       });
       registry.avatars.push(entry);
       registry.updated_at = new Date().toISOString();
@@ -570,6 +595,7 @@ async function cli() {
 
 module.exports = {
   HeyGenFail,
+  normalizeStatus,
   selectAvatar,
   resolve404WithRecovery,
   listAvatarsSafe,
