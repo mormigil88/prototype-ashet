@@ -47,6 +47,10 @@ const LEGACY_CONFIG   = process.env.HEYGEN_IRINA_LEGACY || '/data/heygen_irina_d
 const REGISTRY_DIR   = process.env.HEYGEN_REGISTRY_DIR  || '/data/heygen';
 const REGISTRY_FILE   = path.join(REGISTRY_DIR, 'avatar_registry.json');
 const DEFAULT_ALIAS   = 'основной';
+// Avatar V хранит персонажа как группу, а для рендера принимает ID конкретного
+// look. Если группа задана, preflight обязан смотреть v3 looks этой группы,
+// а не общий legacy-каталог v2.
+const CONFIGURED_GROUP_ID = process.env.HEYGEN_AVATAR_GROUP_ID_IRINA || null;
 
 // ─── Low-level HTTP ───────────────────────────────────────────────────────────
 
@@ -130,7 +134,18 @@ function migrateFromLegacy(registry) {
   // Собираем претендентов: { source, avatar_id, voice_id, status, name }
   const candidates = [];
 
-  // 1. digital twin config
+  // 1. Явная production-конфигурация имеет приоритет над старым файлом.
+  // Это защищает от ситуации, когда в persistent registry остался старый ID.
+  const envAvatarId = process.env.HEYGEN_AVATAR_ID_IRINA;
+  if (envAvatarId) {
+    candidates.push({
+      source: 'env', avatar_id: envAvatarId,
+      voice_id: process.env.HEYGEN_VOICE_ID_IRINA || null,
+      status: 'active', name: 'Ирина (аватар из env)',
+    });
+  }
+
+  // 2. digital twin config
   if (fs.existsSync(LEGACY_CONFIG)) {
     try {
       const twin = JSON.parse(fs.readFileSync(LEGACY_CONFIG, 'utf8'));
@@ -138,12 +153,6 @@ function migrateFromLegacy(registry) {
         candidates.push({ source: 'legacy', avatar_id: twin.avatar_id, voice_id: twin.voice_id || null, status: twin.status || 'active', name: 'Ирина Digital Twin' });
       }
     } catch { /* ignore */ }
-  }
-
-  // 2. env HEYGEN_AVATAR_ID_IRINA
-  const envAvatarId = process.env.HEYGEN_AVATAR_ID_IRINA;
-  if (envAvatarId) {
-    candidates.push({ source: 'env', avatar_id: envAvatarId, voice_id: null, status: 'active', name: 'Ирина (аватар из env)' });
   }
 
   // Дедупликация: уникальные avatar_id
@@ -154,11 +163,17 @@ function migrateFromLegacy(registry) {
     return true;
   });
 
-  // Назначаем alias: первый = "основной", остальные = уникальные
+  // Назначаем alias: явная env-конфигурация — всегда "основной".
   for (let i = 0; i < uniq.length; i++) {
     const c = uniq[i];
     const alias = i === 0 ? DEFAULT_ALIAS : `${DEFAULT_ALIAS}-${i + 1}`;
-    if (!registry.avatars.some(a => a.avatar_id === c.avatar_id)) {
+    const existing = registry.avatars.find(a => a.avatar_id === c.avatar_id);
+    if (!existing) {
+      if (alias === DEFAULT_ALIAS) {
+        const oldDefault = registry.avatars.find(a => a.alias === DEFAULT_ALIAS);
+        if (oldDefault) oldDefault.alias = `${DEFAULT_ALIAS}-legacy`;
+        registry.default_alias = DEFAULT_ALIAS;
+      }
       registry.avatars.push(makeEntry(c.avatar_id, {
         alias,
         name:   c.name,
@@ -167,6 +182,16 @@ function migrateFromLegacy(registry) {
         voice_id: c.voice_id,
       }));
       changed = true;
+    } else if (c.source === 'env') {
+      // Env — явное решение администратора: обновляем голос и делаем запись default.
+      const oldDefault = registry.avatars.find(a => a.alias === DEFAULT_ALIAS && a !== existing);
+      if (oldDefault) oldDefault.alias = `${DEFAULT_ALIAS}-legacy`;
+      if (existing.alias !== DEFAULT_ALIAS || existing.voice_id !== c.voice_id || registry.default_alias !== DEFAULT_ALIAS) {
+        existing.alias = DEFAULT_ALIAS;
+        existing.voice_id = c.voice_id;
+        registry.default_alias = DEFAULT_ALIAS;
+        changed = true;
+      }
     }
   }
 
@@ -194,6 +219,7 @@ function normalizeStatus(hgStatus) {
   switch (String(hgStatus).toLowerCase()) {
     case 'available':  return 'active';    // HeyGen v2: готов к использованию
     case 'active':   return 'active';    // HeyGen v1 / совместимость
+    case 'completed': return 'active';   // HeyGen v3 Avatar V look готов к рендеру
     case 'training': return 'training';  // Digital Twin ещё обучается
     case 'unavailable':
     case 'error':    return 'inactive';  // временно недоступен / ошибка
@@ -202,26 +228,33 @@ function normalizeStatus(hgStatus) {
 }
 
 /**
- * Возвращает массив { avatar_id, name, status, type } из HeyGen.
+ * Возвращает массив { avatar_id, name, status, type, voice_id } из HeyGen.
  * Выбрасывает HeyGenFail при ошибке.
  */
 async function fetchHeyGenAvatars() {
   if (!API_KEY) throw new HeyGenFail('HEYGEN_NO_API_KEY', 'HEYGEN_API_KEY не задан');
 
-  // GET /v2/avatars — список всех аватаров аккаунта
-  const { ok, status, body } = await heygenGET('/v2/avatars');
+  // Avatar V: список look-ов конкретной группы. Look ID — это avatar_id для
+  // POST /v3/videos. Без group ID оставляем v2 для обратной совместимости.
+  const endpoint = CONFIGURED_GROUP_ID
+    ? `/v3/avatars/looks?group_id=${encodeURIComponent(CONFIGURED_GROUP_ID)}`
+    : '/v2/avatars';
+  const { ok, status, body } = await heygenGET(endpoint);
   if (!ok) {
     throw new HeyGenFail('HEYGEN_PREFLIGHT_FAILED',
       `HeyGen preflight не прошёл (${status}): ${JSON.stringify(body)}`);
   }
 
-  // body = { avatars: [...] } или { data: { avatars: [...] } }
-  const avatars = body.avatars ?? body.data?.avatars ?? [];
+  // v3 = { data: AvatarLook[] }, v2 = { avatars: [...] } / { data: { avatars } }
+  const avatars = Array.isArray(body.data)
+    ? body.data
+    : (body.avatars ?? body.data?.avatars ?? []);
   return avatars.map(a => ({
     avatar_id: a.avatar_id ?? a.id,
-    name:      a.name      ?? '(без имени)',
+    name:      a.name ?? a.avatar_name ?? '(без имени)',
     status:    normalizeStatus(a.status),
-    type:      a.type      ?? 'unknown',
+    type:      a.type ?? a.avatar_type ?? 'unknown',
+    voice_id:  a.default_voice_id ?? a.voice_id ?? null,
   }));
 }
 
@@ -237,6 +270,7 @@ function applyPreflight(registry, heygenAvatars) {
     if (hg) {
       // HeyGen знает этого аватара
       entry.status          = hg.status;
+      if (hg.voice_id) entry.voice_id = hg.voice_id;
       entry.last_verified_at = now;
       hgMap.delete(entry.avatar_id);
     } else {
@@ -277,6 +311,9 @@ async function selectAvatar({ preferAlias = null, doPreflight = true, interactiv
     // Пустой реестр — пробуем мигрировать
     if (migrateFromLegacy(registry)) saveRegistry(registry);
   }
+  // Актуальная конфигурация окружения имеет приоритет над cached registry.
+  // Это безопасно: preflight ниже всё равно обязан подтвердить look через API.
+  if (migrateFromLegacy(registry)) saveRegistry(registry);
 
   // 2. Preflight: актуализируем статусы. Ошибка = выход, рендер не запускается.
   let heygenAvatars = [];
@@ -326,6 +363,7 @@ async function selectAvatar({ preferAlias = null, doPreflight = true, interactiv
           name:     p.name,
           type:     p.type || 'digital_twin',
           status:   'active',
+          voice_id: p.voice_id || null,
         });
         registry.avatars.push(replacement);
       }
@@ -364,6 +402,7 @@ async function selectAvatar({ preferAlias = null, doPreflight = true, interactiv
         name:  p.name,
         type:  p.type || 'digital_twin',
         status: normalizeStatus(p.status),
+        voice_id: p.voice_id || null,
       });
       registry.avatars.push(entry);
       registry.updated_at = new Date().toISOString();
@@ -410,6 +449,7 @@ async function resolve404WithRecovery(oldAvatarId) {
           name:     p.name,
           type:     p.type || 'digital_twin',
           status:   'active',
+          voice_id: p.voice_id || null,
         });
         registry.avatars.push(entry);
       }
