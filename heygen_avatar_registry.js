@@ -163,13 +163,15 @@ function migrateFromLegacy(registry) {
     return true;
   });
 
-  // Назначаем alias: явная env-конфигурация — всегда "основной".
+  // Env применяется как bootstrap и при явной смене настройки администратором.
+  // После ручного выбора Ирой она не должна самовольно сбрасывать default.
   for (let i = 0; i < uniq.length; i++) {
     const c = uniq[i];
     const alias = i === 0 ? DEFAULT_ALIAS : `${DEFAULT_ALIAS}-${i + 1}`;
     const existing = registry.avatars.find(a => a.avatar_id === c.avatar_id);
+    const configChanged = c.source === 'env' && registry.configured_avatar_id !== c.avatar_id;
     if (!existing) {
-      if (alias === DEFAULT_ALIAS) {
+      if (alias === DEFAULT_ALIAS && (c.source !== 'env' || configChanged)) {
         const oldDefault = registry.avatars.find(a => a.alias === DEFAULT_ALIAS);
         if (oldDefault) oldDefault.alias = `${DEFAULT_ALIAS}-legacy`;
         registry.default_alias = DEFAULT_ALIAS;
@@ -181,15 +183,24 @@ function migrateFromLegacy(registry) {
         status: c.status === 'active' ? 'active' : 'inactive',
         voice_id: c.voice_id,
       }));
+      if (c.source === 'env') registry.configured_avatar_id = c.avatar_id;
       changed = true;
     } else if (c.source === 'env') {
-      // Env — явное решение администратора: обновляем голос и делаем запись default.
-      const oldDefault = registry.avatars.find(a => a.alias === DEFAULT_ALIAS && a !== existing);
-      if (oldDefault) oldDefault.alias = `${DEFAULT_ALIAS}-legacy`;
-      if (existing.alias !== DEFAULT_ALIAS || existing.voice_id !== c.voice_id || registry.default_alias !== DEFAULT_ALIAS) {
+      // Новое значение env — решение администратора. То же значение — только
+      // синхронизация голоса, без отмены ручного выбора Иры.
+      if (configChanged) {
+        const oldDefault = registry.avatars.find(a => a.alias === DEFAULT_ALIAS && a !== existing);
+        if (oldDefault) oldDefault.alias = `${DEFAULT_ALIAS}-legacy`;
         existing.alias = DEFAULT_ALIAS;
-        existing.voice_id = c.voice_id;
         registry.default_alias = DEFAULT_ALIAS;
+        changed = true;
+      }
+      if (existing.voice_id !== c.voice_id) {
+        existing.voice_id = c.voice_id;
+        changed = true;
+      }
+      if (registry.configured_avatar_id !== c.avatar_id) {
+        registry.configured_avatar_id = c.avatar_id;
         changed = true;
       }
     }
@@ -287,6 +298,65 @@ function applyPreflight(registry, heygenAvatars) {
   // Сохраняем их в _pending — они пригодятся для сообщения при выборе.
   registry._pending = Array.from(hgMap.values());
   registry.updated_at = now;
+}
+
+/** Бесплатно обновляет registry из HeyGen и сохраняет результат. */
+async function refreshRegistry() {
+  let registry = loadRegistry();
+  if (!registry) registry = initRegistry();
+  migrateFromLegacy(registry);
+  const heygenAvatars = await fetchHeyGenAvatars();
+  applyPreflight(registry, heygenAvatars);
+  saveRegistry(registry);
+  return registry;
+}
+
+/**
+ * Выбрать look по номеру из безопасного списка. Номера намеренно не являются
+ * HeyGen ID, поэтому их можно показывать Ире в чате.
+ */
+async function chooseAvatarByNumber(number, alias = null) {
+  const numeric = Number(number);
+  if (!Number.isInteger(numeric) || numeric < 1) {
+    throw new HeyGenFail('HEYGEN_AVATAR_NOT_FOUND', 'Укажите номер аватара из списка.');
+  }
+  const registry = await refreshRegistry();
+  const known = registry.avatars.map(a => ({ source: 'known', value: a }));
+  const pending = (registry._pending || []).map(a => ({ source: 'pending', value: a }));
+  const selected = [...known, ...pending][numeric - 1];
+  if (!selected) throw new HeyGenFail('HEYGEN_AVATAR_NOT_FOUND', 'Такого номера нет в текущем списке аватаров.');
+  if (selected.value.status !== 'active') {
+    throw new HeyGenFail('HEYGEN_AVATAR_INACTIVE', 'Этот аватар ещё не готов. Выберите вариант со статусом «готов».');
+  }
+
+  let entry;
+  if (selected.source === 'pending') {
+    const nextAlias = alias || `аватар-${numeric}`;
+    if (registry.avatars.some(a => a.alias === nextAlias)) {
+      throw new HeyGenFail('HEYGEN_DUPLICATE_ALIAS', 'Такое короткое имя уже занято другим аватаром.');
+    }
+    entry = makeEntry(selected.value.avatar_id, {
+      alias: nextAlias,
+      name: selected.value.name,
+      type: selected.value.type || 'digital_twin',
+      status: 'active',
+      voice_id: selected.value.voice_id || null,
+    });
+    registry.avatars.push(entry);
+    registry._pending = registry._pending.filter(a => a.avatar_id !== entry.avatar_id);
+  } else {
+    entry = selected.value;
+    if (alias && alias !== entry.alias) {
+      if (registry.avatars.some(a => a !== entry && a.alias === alias)) {
+        throw new HeyGenFail('HEYGEN_DUPLICATE_ALIAS', 'Такое короткое имя уже занято другим аватаром.');
+      }
+      entry.alias = alias;
+    }
+  }
+  registry.default_alias = entry.alias;
+  registry.updated_at = new Date().toISOString();
+  saveRegistry(registry);
+  return { number: numeric, alias: entry.alias, name: entry.name, status: entry.status };
 }
 
 // ─── Публичное API ────────────────────────────────────────────────────────────
@@ -558,27 +628,20 @@ async function cli() {
 
   try {
     if (cmd === 'list') {
-      const reg = loadRegistry() || initRegistry();
-      if (reg.avatars.length === 0) {
-        console.log('Реестр пуст. Запустите миграцию: node heygen_avatar_registry.js migrate');
-        return;
-      }
-      console.log(`Реестр аватаров HeyGen (default: ${reg.default_alias})`);
-      console.log('');
-      for (const a of reg.avatars) {
-        const marker = a.alias === reg.default_alias ? ' ★' : '';
-        console.log(`  [${a.alias}]${marker} "${a.name}" — ${a.status} (${a.type})`);
-        console.log(`          avatar_id: ${a.avatar_id}`);
-        if (a.voice_id) console.log(`          voice_id:  ${a.voice_id}`);
-        console.log(`          проверен:  ${a.last_verified_at}`);
-        console.log('');
-      }
-      if (reg._pending?.length) {
-        console.log(`Неизвестные HeyGen-аватары (нужен выбор):`);
-        for (const p of reg._pending) {
-          console.log(`  "${p.name}" — ${p.status} [${p.avatar_id}]`);
-        }
-      }
+      await refreshRegistry();
+      const { choices, default_number } = listAvatarsSafe();
+      if (choices.length === 0) { console.log('Нет доступных аватаров.'); return; }
+      choices.forEach((a) => {
+        const marker = a.number === default_number ? ' ← выбран' : '';
+        const status = a.status === 'active' ? 'готов' : a.status;
+        console.log(`${a.number}. ${a.name} — ${status}${marker}`);
+      });
+      return;
+    }
+
+    if (cmd === 'choose') {
+      const result = await chooseAvatarByNumber(arg, process.argv[4] || null);
+      console.log(`Выбран: ${result.name} (${result.alias}). Он будет использоваться по умолчанию.`);
       return;
     }
 
@@ -641,6 +704,8 @@ module.exports = {
   listAvatarsSafe,
   registerAvatar,
   updateVoiceId,
+  refreshRegistry,
+  chooseAvatarByNumber,
   setDefault,
   loadRegistry,
   saveRegistry,

@@ -30,11 +30,14 @@ test('v3 Avatar Look completed → active with its default voice', async (t) => 
       json: async () => ({ data: [{
         id: 'irina-look', name: 'Ирина Digital Twin', status: 'completed',
         avatar_type: 'digital_twin', default_voice_id: 'irina-voice',
+      }, {
+        id: 'irina-look-2', name: 'Ирина в летнем образе', status: 'completed',
+        avatar_type: 'photo_avatar', default_voice_id: 'summer-voice',
       }] }),
     };
   };
   delete require.cache[require.resolve('../heygen_avatar_registry')];
-  const { selectAvatar } = require('../heygen_avatar_registry');
+  const { selectAvatar, chooseAvatarByNumber } = require('../heygen_avatar_registry');
 
   t.after(() => {
     global.fetch = originalFetch;
@@ -44,9 +47,16 @@ test('v3 Avatar Look completed → active with its default voice', async (t) => 
     }
   });
 
+  const selected = await chooseAvatarByNumber(2, 'летний');
+  assert.deepStrictEqual(
+    { alias: selected.alias, name: selected.name, status: selected.status },
+    { alias: 'летний', name: 'Ирина в летнем образе', status: 'active' },
+  );
+
+  // Тот же env bootstrap не должен отменять осознанный выбор из чата.
   const result = await selectAvatar({ doPreflight: true });
   assert.deepStrictEqual(
     { avatar_id: result.avatar_id, voice_id: result.voice_id, alias: result.alias },
-    { avatar_id: 'irina-look', voice_id: 'irina-voice', alias: 'основной' },
+    { avatar_id: 'irina-look-2', voice_id: 'summer-voice', alias: 'летний' },
   );
 });
