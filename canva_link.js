@@ -46,7 +46,7 @@ const CANVA_DESIGN_RE = /https?:\/\/(?:www\.)?canva\.com\/design\/([A-Za-z0-9_-]
 // env читаем лениво (не в константы модуля) — тесты переопределяют пути
 // между кейсами без пересоздания модуля.
 const apiBase = () => process.env.CANVA_API_BASE || 'https://api.canva.com/rest/v1';
-const tokensFile = () => process.env.CANVA_TOKENS_FILE || '/data/canva_tokens.json';
+const tokensFile = () => process.env.CANVA_TOKENS_FILE || '/data/canva/canva_tokens.json';
 const designsFile = () => process.env.CANVA_DESIGNS_FILE || '/data/canva/canva_designs.json';
 
 class CanvaFail extends Error {

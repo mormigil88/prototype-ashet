@@ -1,0 +1,6 @@
+.env
+.DS_Store
+видео ольги/
+*.mp4
+*.mov
+*.webm

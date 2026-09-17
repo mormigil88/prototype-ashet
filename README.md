@@ -11,6 +11,7 @@ CLAUDE.md — это **шаблон с placeholders**, не готовый си�
 | `Dockerfile` / `entrypoint.sh` | Контейнер + обход трёх известных багов (см. `CHANNELS_CLIENT_PLAYBOOK.md` § «Известные баги entrypoint.sh»). Не править без чтения этого раздела. |
 | `companion.js` | Прозрачность токенов + детектор порчи текста + детектор истёкшей OAuth-сессии (`/status` для дирижёра). |
 | `transcribe.js` | Распознавание голосовых И видео через Groq Whisper (видео — mp4-контейнер, Whisper сам вытаскивает звук). Нужен `GROQ_API_KEY`. |
+| `burn_translated_subtitles.js` | Английские субтитры для русской речи: таймкоды берутся из русской транскрипции Groq, перевод — бесплатная `openai/gpt-oss-20b:free` через OpenRouter. Нужны `GROQ_API_KEY` и `OPENROUTER_API_KEY`. |
 | `recall_memory.js` | Подгрузка `facts`/`summaries` из memory-gateway в CLAUDE.md ДО старта `claude` — чтобы модель не полагалась на свой `/recall`. |
 | `edit_image.js` | Детерминированное наложение текста на фото (ImageMagick, не AI). |
 | `generate_image.js` | AI-генерация картинок (OpenAI gpt-image-1 по умолчанию, Runway как fallback). |

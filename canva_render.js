@@ -10,7 +10,7 @@
 // новый, старый умирает вместе со всей цепочкой при повторе). Поэтому env-переменная
 // годится только как сид при первом запуске (CANVA_REFRESH_TOKEN_SEED), а живая пара
 // access/refresh хранится в файле на постоянном volume (CANVA_TOKENS_FILE, по умолчанию
-// /data/canva_tokens.json) и перезаписывается атомарно при каждом refresh.
+// /data/canva/canva_tokens.json) и перезаписывается атомарно при каждом refresh.
 //
 // Команды:
 //   node canva_render.js --check
@@ -32,7 +32,7 @@ const fs = require('fs');
 const path = require('path');
 
 const API = 'https://api.canva.com/rest/v1';
-const TOKENS_FILE = process.env.CANVA_TOKENS_FILE || '/data/canva_tokens.json';
+const TOKENS_FILE = process.env.CANVA_TOKENS_FILE || '/data/canva/canva_tokens.json';
 
 function fail(code, msg) {
   console.error(`${code}: ${msg}`);

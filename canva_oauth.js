@@ -7,6 +7,7 @@
 //
 // Использование:
 //   CANVA_CLIENT_ID=... CANVA_CLIENT_SECRET=... node canva_oauth.js [--port 8571] [--out canva_tokens.json]
+//   После запуска: cp canva_tokens.json /data/canva/canva_tokens.json && chown node:node /data/canva/canva_tokens.json
 //
 // Перед запуском: redirect URL http://127.0.0.1:8571/callback должен быть добавлен
 // в интеграцию (Developer Portal → Authentication → Authorized redirects).

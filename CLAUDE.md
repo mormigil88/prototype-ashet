@@ -277,6 +277,96 @@ node /app/edit_image_runway.js <путь-к-фото> "<что изменить>
 вернули ошибку, не запускай обычную генерацию как замену — скажи о технической
 ошибке.
 
+## Design by Reference — стиль по референсам
+
+Когда пользователь присылает 2–3 изображения и просит «повтори стиль», «сделай в таком стиле»,
+«по аналогии с этими референсами» или аналогично — это **обязательный route Design by Reference**.
+
+**В этом сценарии `generate_image.js` и `edit_image.js` ЗАПРЕЩЕНЫ.** Только Vision-анализ → variant picker → renderer.
+
+### Обязательный pipeline
+
+```
+1. Preflight (local OCR) → BLOCKED на sensitive → exit 2
+2. Vision API → design-spec.json для каждого референса
+3. Token alignment → unified spec + N layout variants
+4. SHOW USER: варианты с описанием, preview, стоимостью
+5. ТОЛЬКО после «Подтверждаю вариант N» → renderer → PNG
+```
+
+### Обязательные аргументы
+
+```bash
+# Анализ референсов
+node design-analyzer.js --image <ref1> --image <ref2> --output-dir /tmp/refs/
+
+# Variant picker (показ вариантов, без рендера)
+node multi-ref.js --refs ref1.png ref2.png --output-dir /tmp/refs/ --preview-only
+
+# После подтверждения — финальный рендер
+node editorial-renderer.js --spec /tmp/refs/variant-N.json --bg-image <bg-asset> --content-json content.json --out out.png
+```
+
+### Контент-поля → компоненты
+
+| JSON-поле | Компонент |
+|-----------|----------|
+| `headline` | `HeroTitle` |
+| `bodyText` | `BodyText` |
+| `ctaText` | `CTABlock` |
+| `accentText` | `AccentText` |
+| `items` | `ListBlock` |
+
+### Provenance для background assets
+
+Для КАЖДОГО background asset в variant JSON обязателен provenance-блок:
+
+```json
+{
+  "backgroundAsset": {
+    "assetPath": "/path/to/bg.jpg",
+    "provenance": {
+      "assetType": "user_owned | licensed_stock | generated",
+      "source": "описание источника",
+      "licenseOrGenerationId": "лицензия или ID генерации",
+      "derivedFromReference": false
+    }
+  }
+}
+```
+
+**Hard reject (exit 1):**
+- `derivedFromReference: true` → отклонить
+- asset path под `/tmp/multi-ref/ref-N/` или `/tmp/ig-ref4/` → отклонить
+- SHA-256 diff недостаточен для обхода: кроп/ресайз/reflow reference asset → отклонить
+
+### Preview для пользователя (БЕЗ финального рендера)
+
+Перед подтверждением показать:
+- Название варианта + краткое описание различий
+- source reference preview
+- Ожидаемый composition class
+- Список компонентов и позиций
+- Стоимость (все шаги кроме рендера — бесплатны)
+
+### Подтверждение
+
+Ждать: **«Подтверждаю вариант 1»** или **«Подтверждаю вариант 2»**
+После подтверждения: рендер → PNG → отправить файлы + variant.json + manifest + layout-report
+
+### E2E preview-тест (без Runway, без финального рендера)
+
+```bash
+# 3 reference images + content → preview variants only
+node /app/design-by-reference-preview.js \
+  --refs photo1.png photo2.png photo3.png \
+  --content '{"headline":"...","bodyText":"...","ctaText":"..."}' \
+  --output-dir /tmp/refs-preview/
+# Выход: 2 варианта JSON + console-таблица для Kimi → показать пользователю
+```
+
+---
+
 ## Как генерировать картинку по теме — Runway
 
 Картинки генерируются через подключённый `RUNWAY_API_KEY`. Для Ирины не выполняй

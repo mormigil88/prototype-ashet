@@ -14,6 +14,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
+const { ClaudeAuthRecovery } = require('./claude_auth_recovery');
 
 const PORT = process.env.COMPANION_PORT || 8787;
 const SECRET = process.env.COMPANION_SECRET || '';
@@ -1162,6 +1163,7 @@ const FALLBACK_INTERVAL_MS = 20000;
 const FALLBACK_MIN_AGE_MS = 15000; // не трогать ходы младше этого — модель может ещё работать
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHUNK_LIMIT = 4000;
+const AUTH_RECOVERY_CHAT_ID = process.env.CLAUDE_AUTH_RECOVERY_CHAT_ID || '418524161';
 
 function loadFallbackState() {
   try {
@@ -1202,6 +1204,70 @@ async function sendFallback(chatId, text) {
     }
   }
   return true;
+}
+
+async function sendAuthRecoveryMessage(text, loginUrl) {
+  if (!TELEGRAM_TOKEN || !AUTH_RECOVERY_CHAT_ID) return false;
+  const body = {
+    chat_id: AUTH_RECOVERY_CHAT_ID,
+    text,
+    disable_web_page_preview: true,
+  };
+  if (loginUrl) {
+    body.reply_markup = {
+      inline_keyboard: [[{ text: 'Войти в Claude для Kimi', url: loginUrl }]],
+    };
+  }
+  const resp = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await resp.json();
+  if (!data.ok) throw new Error('Telegram delivery failed');
+  return true;
+}
+
+const authRecovery = new ClaudeAuthRecovery({
+  chatId: AUTH_RECOVERY_CHAT_ID,
+  sendLoginLink: (url) => sendAuthRecoveryMessage(
+    'Kimi потерял вход в Claude. Откройте кнопку, войдите в аккаунт Claude, который обслуживает Kimi, затем пришлите сюда команду:\n/kimi-login <код со страницы>',
+    url,
+  ),
+  sendStatus: (text) => sendAuthRecoveryMessage(text),
+});
+
+function findAuthRecoveryCommands(filePath) {
+  const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(Boolean);
+  const commands = [];
+  for (const line of lines) {
+    let item;
+    try { item = JSON.parse(line); } catch (_) { continue; }
+    if (item.type !== 'user' || typeof item.message?.content !== 'string') continue;
+    const chatId = extractChatId(item.message.content);
+    const match = item.message.content.match(/(?:^|\n)\/kimi-login\s+([^\s<]{4,2048})/i);
+    if (chatId && match) commands.push({
+      chatId,
+      text: `/kimi-login ${match[1]}`,
+      receivedAt: Date.parse(item.timestamp || '') || 0,
+    });
+  }
+  return commands;
+}
+
+function checkClaudeAuthRecovery() {
+  try {
+    const file = findLatestTranscript();
+    if (!file) return;
+    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+    if (!detectAuthExpired(lines).auth_expired) return;
+    authRecovery.start();
+    for (const command of findAuthRecoveryCommands(file)) {
+      authRecovery.submitCode(command.chatId, command.text, command.receivedAt);
+    }
+  } catch (e) {
+    console.error('[auth-recovery] check failed:', String(e.message || e));
+  }
 }
 
 // Последовательный проход по файлу: каждое входящее сообщение (user-запись
@@ -1284,3 +1350,7 @@ async function checkUndeliveredAndDeliver() {
 }
 
 setInterval(checkUndeliveredAndDeliver, FALLBACK_INTERVAL_MS);
+// Работает независимо от Claude Code и поэтому может прислать кнопку входа,
+// когда сам bot channels уже отвечает только "Not logged in".
+setInterval(checkClaudeAuthRecovery, 5000);
+checkClaudeAuthRecovery();

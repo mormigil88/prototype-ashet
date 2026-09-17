@@ -1,0 +1,178 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "design-spec.schema.json",
+  "title": "DesignSpec",
+  "description": "Design system tokens extracted from a carousel reference image",
+  "type": "object",
+  "required": ["version", "canvas", "palette", "typography", "layout", "components"],
+  "additionalProperties": false,
+  "definitions": {
+    "colorWithConfidence": {
+      "type": "object",
+      "required": ["value", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "value": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "typographyToken": {
+      "type": "object",
+      "required": ["fontFamily", "fontSize", "fontWeight", "lineHeight", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "fontFamily": { "type": "string" },
+        "fontFamilyFallback": { "type": "string", "default": "Arial, sans-serif" },
+        "fontSize": { "type": "string", "pattern": "^\\d+(\\.\\d+)?(px|em|rem|%)$" },
+        "fontSizePx": { "type": "integer", "description": "Computed pixel value" },
+        "fontWeight": { "type": "string", "pattern": "^(normal|bold|\\d{3})$" },
+        "fontWeightNumeric": { "type": "integer", "description": "Computed numeric (100-900)" },
+        "lineHeight": { "type": "string" },
+        "letterSpacing": { "type": "string" },
+        "textTransform": { "type": "string", "enum": ["none", "uppercase", "lowercase", "capitalize"] },
+        "textShadow": { "type": "string" },
+        "stroke": { "type": "string" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "layoutZone": {
+      "type": "object",
+      "required": ["x", "y", "width", "height", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "align": { "type": "string", "enum": ["left", "center", "right"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "componentToken": {
+      "type": "object",
+      "required": ["type", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["HeroTitle", "SolutionCard", "BulletList", "GradientOverlay", "FooterCTA", "PhotoBackground", "AccentText", "Custom"]
+        },
+        "x": { "type": "integer" },
+        "y": { "type": "integer" },
+        "width": { "type": "integer" },
+        "height": { "type": "integer" },
+        "backgroundColor": { "$ref": "#/definitions/colorWithConfidence" },
+        "borderRadius": { "type": "string" },
+        "border": { "type": "string" },
+        "boxShadow": { "type": "string" },
+        "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "backgroundToken": {
+      "type": "object",
+      "required": ["type", "confidence"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "type": "string", "enum": ["solid", "gradient", "photo", "pattern", "texture"] },
+        "colors": { "type": "array", "items": { "$ref": "#/definitions/colorWithConfidence" }, "minItems": 1 },
+        "gradientDirection": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "overlayOpacity": { "type": "number" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    }
+  },
+  "properties": {
+    "version": { "type": "string", "const": "1.0" },
+    "sourceImage": { "type": "string", "description": "Original filename or URL" },
+    "sourceImageHash": { "type": "string", "description": "SHA256 of source for traceability" },
+    "analyzedAt": { "type": "string", "format": "date-time" },
+    "modelUsed": { "type": "string" },
+    "visionCostUsd": { "type": "number", "minimum": 0 },
+    "canvas": {
+      "type": "object",
+      "required": ["width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "aspectRatio": { "type": "string" }
+      }
+    },
+    "safeArea": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "top": { "type": "integer", "minimum": 0 },
+        "right": { "type": "integer", "minimum": 0 },
+        "bottom": { "type": "integer", "minimum": 0 },
+        "left": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "palette": {
+      "type": "object",
+      "required": ["background", "primary", "text", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "background": { "$ref": "#/definitions/colorWithConfidence" },
+        "primary": { "$ref": "#/definitions/colorWithConfidence" },
+        "secondary": { "$ref": "#/definitions/colorWithConfidence" },
+        "accent": { "$ref": "#/definitions/colorWithConfidence" },
+        "text": { "$ref": "#/definitions/colorWithConfidence" },
+        "textSecondary": { "$ref": "#/definitions/colorWithConfidence" },
+        "divider": { "$ref": "#/definitions/colorWithConfidence" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "typography": {
+      "type": "object",
+      "required": ["heading", "body", "caption", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "heading": { "$ref": "#/definitions/typographyToken" },
+        "subheading": { "$ref": "#/definitions/typographyToken" },
+        "body": { "$ref": "#/definitions/typographyToken" },
+        "caption": { "$ref": "#/definitions/typographyToken" },
+        "label": { "$ref": "#/definitions/typographyToken" },
+        "cta": { "$ref": "#/definitions/typographyToken" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": { "$ref": "#/definitions/layoutZone" },
+        "subtitle": { "$ref": "#/definitions/layoutZone" },
+        "heroImage": { "$ref": "#/definitions/layoutZone" },
+        "contentArea": { "$ref": "#/definitions/layoutZone" },
+        "cta": { "$ref": "#/definitions/layoutZone" },
+        "footer": { "$ref": "#/definitions/layoutZone" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/componentToken" }
+    },
+    "background": { "$ref": "#/definitions/backgroundToken" },
+    "accessibility": {
+      "type": "object",
+      "properties": {
+        "contrastRatio": { "type": "number" },
+        "wcagLevel": { "type": "string", "enum": ["AA", "AAA", "FAIL"] }
+      }
+    },
+    "originalResponse": {
+      "type": "string",
+      "description": "Raw model response for debugging, must not contain secrets"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Overall confidence across all extracted tokens"
+    }
+  }
+}

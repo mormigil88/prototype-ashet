@@ -1,23 +1,33 @@
+# syntax=docker/dockerfile:1
 FROM node:20-bookworm-slim
 
+# ─── System dependencies ──────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl unzip ca-certificates git python3 python3-pip \
+    curl unzip ca-certificates git \
     imagemagick fontconfig fonts-dejavu-core \
     ffmpeg \
+    tesseract-ocr tesseract-ocr-rus \
+    poppler-utils \
+    libjpeg62-turbo \
+    python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Локальная сегментация создаёт маску человека: после Runway оригинальные
-# пиксели лица и тела накладываются обратно, а не перерисовываются моделью.
-ENV U2NET_HOME="/opt/rembg-models"
-ENV NUMBA_DISABLE_JIT="1"
-RUN python3 -m pip install --no-cache-dir --break-system-packages "rembg[cpu]==2.0.67" \
-    && python3 -c "from rembg import new_session; new_session('u2net_human_seg')" \
-    && chown -R node:node /opt/rembg-models
+# TESSDATA_PREFIX for tesseract-ocr (Debian path)
+ENV TESSDATA_PREFIX="/usr/share/tesseract-ocr/5/tessdata"
+
+# Python venv for PIL/Pillow + playwright
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+ENV VIRTUAL_ENV="/opt/venv"
+
+# Install Python packages AFTER venv is ready
+RUN /opt/venv/bin/pip install --no-cache-dir \
+    Pillow pytesseract playwright
+
+# Install Playwright Chromium browser
+RUN /opt/venv/bin/playwright install chromium --with-deps
 
 # Bun — нужен плагинам-каналам (Telegram/Discord — это Bun-скрипты)
-# Ставим в /opt, а не в $HOME=/root — непривилегированный appuser не может
-# зайти в /root (нужен для --dangerously-skip-permissions, который Claude
-# Code запрещает запускать от root)
 ENV BUN_INSTALL="/opt/bun"
 RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH="$BUN_INSTALL/bin:$PATH"
@@ -25,27 +35,26 @@ ENV PATH="$BUN_INSTALL/bin:$PATH"
 # Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Постоянное хранилище авторизации/конфига Claude Code монтируется в /data (volume)
-ENV CLAUDE_CONFIG_DIR="/data/claude-home"
+# APP_DIR is the canonical location for all pipeline scripts
+ENV APP_DIR="/app"
 
-# Отключаем интерактивный промпт "Resume from summary?" — в headless-контейнере
-# его некому подтвердить (нет TTY), и claude --continue вешает весь процесс
-# намертво, как только сессия на volume проживёт дольше 70 мин простоя ИЛИ
-# наберёт 100k токенов (дефолты CLI). Инцидент 16.07.2026 у ashet-olga: бот не
-# отвечал клиенту 12+ часов, дирижёр не мог это увидеть (сообщение застревает
-# ДО записи в транскрипт). Пороги подняты фактически до бесконечности — промпт
-# просто никогда не должен всплывать в этом сценарии использования.
-ENV CLAUDE_CODE_RESUME_THRESHOLD_MINUTES="999999999"
-ENV CLAUDE_CODE_RESUME_TOKEN_THRESHOLD="999999999"
+# ─── Pipeline files (Design by Reference) ─────────────────────────────────
+COPY preflight.py /app/preflight.py
+COPY design-analyzer.js /app/design-analyzer.js
+COPY vision-provider.js /app/vision-provider.js
+COPY multi-ref.js /app/multi-ref.js
+COPY schema-validator.js /app/schema-validator.js
+COPY editorial-renderer.js /app/editorial-renderer.js
+COPY content-auditor.js /app/content-auditor.js
+COPY design-by-reference-preview.js /app/design-by-reference-preview.js
+COPY design-spec.schema.json /app/design-spec.schema.json
+COPY components/ /app/components/
 
-# Непривилегированный пользователь — обязателен для --dangerously-skip-permissions.
-# node:bookworm-slim уже включает пользователя "node" (uid 1000), используем его.
-
+# ─── Node dependencies ──────────────────────────────────────────────────────
 WORKDIR /app
 RUN npm install --no-save @aws-sdk/client-s3@3.1120.0
-# CLAUDE.base.md — исходный системный промпт, entrypoint.sh копирует его в
-# CLAUDE.md на каждом старте, до дописывания памяти прошлых сессий.
-COPY CLAUDE.md /app/CLAUDE.base.md
+
+# ─── App files ────────────────────────────────────────────────────────────
 COPY companion.js /app/companion.js
 COPY claude_auth_recovery.js /app/claude_auth_recovery.js
 COPY transcribe.js /app/transcribe.js
@@ -74,10 +83,13 @@ COPY prepare_youtube_avatar_source.js /app/prepare_youtube_avatar_source.js
 COPY create_digital_twin.js /app/create_digital_twin.js
 COPY heygen_avatar_registry.js /app/heygen_avatar_registry.js
 COPY recall_memory.js /app/recall_memory.js
+
+# CLAUDE.base.md — исходный системный промпт, entrypoint.sh копирует его в CLAUDE.md на каждом старте
+COPY CLAUDE.md /app/CLAUDE.base.md
+
 RUN chown -R node:node /app
 
-# Нужен в рантайме, чтобы подготовить собственный ролик Иры с YouTube для
-# обучения HeyGen Digital Twin (после явного подтверждения прав и согласия).
+# ─── yt-dlp (YouTube video download) ──────────────────────────────────────
 RUN curl -L --fail --retry 3 \
     https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
     -o /usr/local/bin/yt-dlp && chmod 755 /usr/local/bin/yt-dlp
