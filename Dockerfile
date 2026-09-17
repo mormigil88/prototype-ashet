@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# Rebuild: 2026-09-17 — Design by Reference pipeline
 FROM node:20-bookworm-slim
 
 # ─── System dependencies ──────────────────────────────────────────────────────
