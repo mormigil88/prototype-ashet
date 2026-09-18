@@ -279,33 +279,63 @@ node /app/edit_image_runway.js <путь-к-фото> "<что изменить>
 
 ## Design by Reference — стиль по референсам
 
-Когда пользователь присылает 2–3 изображения и просит «повтори стиль», «сделай в таком стиле»,
+Когда пользователь присылает 2–10 изображений и просит «повтори стиль», «сделай в таком стиле»,
 «по аналогии с этими референсами» или аналогично — это **обязательный route Design by Reference**.
 
-**В этом сценарии `generate_image.js` и `edit_image.js` ЗАПРЕЩЕНЫ.** Только Vision-анализ → variant picker → renderer.
+**В этом сценарии `generate_image.js`, `edit_image.js` и Vision API (OpenRouter/MiniMax) ЗАПРЕЩЕНЫ.**
+Только Claude multimodal analysis → design-spec → variant picker → renderer.
 
-### Обязательный pipeline
+### Обязательный pipeline (Claude-native)
 
 ```
 1. Preflight (local OCR) → BLOCKED на sensitive → exit 2
-2. Vision API → design-spec.json для каждого референса
-3. Token alignment → unified spec + N layout variants
-4. SHOW USER: варианты с описанием, preview, стоимостью
-5. ТОЛЬКО после «Подтверждаю вариант N» → renderer → PNG
+2. Claude multimodal analysis (YOURSELF) → design-spec JSON
+3. write-design-spec.js → schema-validated design-spec.json
+4. multi-ref.js → unified spec + 2 layout variants (NO Vision calls)
+5. SHOW USER: варианты с описанием, preview, backgroundPrompt
+6. ТОЛЬКО после «Подтверждаю вариант N» → background asset + renderer → PNG
 ```
 
-### Обязательные аргументы
+### Claude-native design-spec JSON contract
+
+Kimi обязан проанализировать приложенные референсы своим мультимодальным сеансом
+и вывести следующий JSON в файл:
 
 ```bash
-# Анализ референсов
-node design-analyzer.js --image <ref1> --image <ref2> --output-dir /tmp/refs/
-
-# Variant picker (показ вариантов, без рендера)
-node multi-ref.js --refs ref1.png ref2.png --output-dir /tmp/refs/ --preview-only
-
-# После подтверждения — финальный рендер
-node editorial-renderer.js --spec /tmp/refs/variant-N.json --bg-image <bg-asset> --content-json content.json --out out.png
+node /app/write-design-spec.js \
+  --json '{"canvas":{...},"palette":{...},"typography":{...},"compositionClass":"...","backgroundDescription":"...","decorativeElements":[...],"components":[]}' \
+  --output /tmp/refs/design-spec.json
 ```
+
+**Обязательные поля:**
+
+| Поле | Тип | Описание |
+|------|-----|---------|
+| `canvas` | `{width, height}` | Целевой canvas 1080×1350 |
+| `palette` | `{background, primary, secondary, accent, text, textSecondary}` | Каждое `{value: "#RRGGBB", confidence: 0.0-1.0}` |
+| `typography` | `{heading, body, eyebrow?, subheading?}` | `{fontFamily, fontSize, fontWeight, lineHeight}` |
+| `compositionClass` | string | `luxury-editorial`, `art-deco`, `minimal`, `bold-contrast` и т.д. |
+| `backgroundDescription` | string | Описание фона: «dark marble interior», «art-deco woman portrait», «luxury gold accents on black» |
+| `decorativeElements` | `[{type, color, width, position}]` | `border`, `accent_line`, `frame`, `rule` |
+| `components` | `[{type, zone: {x,y,w,h}, foreground, background, ...}]` | Зоны с типом компонента |
+| `typographyHierarchy` | `{eyebrow?, subheading?}` | Текстовые уровни если есть |
+| `confidence` | 0.0-1.0 | Уверенность анализа |
+
+**Допустимые типы компонентов:** `HeroTitle`, `BodyText`, `CTABlock`, `AccentText`, `OverlayCard`, `ListBlock`, `GradientOverlay`, `DecorativeBorder`, `GoldAccentLine`, `EyebrowText`, `SubheadingText`, `PhotoBackground`, `Custom`.
+
+**Выходной файл:** `/tmp/refs/design-spec.json`
+
+### Variant generation (после design-spec.json)
+
+```bash
+# 2 варианта из уже сохранённых референсов (preflicht прошёл)
+node /app/multi-ref.js \
+  --refs /data/claude-home/channels/telegram/inbox/<file1>.jpg \
+         /data/claude-home/channels/telegram/inbox/<file2>.jpg \
+  --output-dir /tmp/refs/ --preview-only
+```
+
+**providerCalls в выводе multi-ref должен быть 0** — OpenRouter/MiniMax не вызывались.
 
 ### Контент-поля → компоненты
 
@@ -354,15 +384,34 @@ node editorial-renderer.js --spec /tmp/refs/variant-N.json --bg-image <bg-asset>
 Ждать: **«Подтверждаю вариант 1»** или **«Подтверждаю вариант 2»**
 После подтверждения: рендер → PNG → отправить файлы + variant.json + manifest + layout-report
 
-### E2E preview-тест (без Runway, без финального рендера)
+### OpenRouter Vision — ТОЛЬКО явный explicit fallback
+
+**OpenRouter Vision НЕ вызывается автоматически в Design by Reference.**
+
+**Когда вызывать:**
+- Только если админ явно написал: `используй OpenRouter для Vision`
+- Обычный Design by Reference маршрут — Claude-native (без API calls)
+
+**При ошибке 402:**
+```
+❗ OpenRouter balance exhausted (HTTP 402). Falling back to Claude-native multimodal analysis.
+Design by Reference pipeline continues without OpenRouter.
+```
+
+**Hard rules:**
+- OpenRouter не вызывается автоматически при наличии референсов
+- `--neutral` НЕ использовать если референсы реально приложены
+- MiniMax Vision (ANTHROPIC_AUTH_TOKEN) — так же, только если Claude multimodal analysis не справился
+
+### E2E preview-тест (Claude-native, без Vision API)
 
 ```bash
-# 3 reference images + content → preview variants only
-node /app/design-by-reference-preview.js \
-  --refs photo1.png photo2.png photo3.png \
-  --content '{"headline":"...","bodyText":"...","ctaText":"..."}' \
-  --output-dir /tmp/refs-preview/
-# Выход: 2 варианта JSON + console-таблица для Kimi → показать пользователю
+# Референсы уже в inbox после Preflight
+# Kimi анализирует их сам через multimodal Claude
+# 1. Анализ → write-design-spec.js
+# 2. multi-ref --preview-only
+# 3. Показ вариантов
+# providerCalls должен быть 0
 ```
 
 ---

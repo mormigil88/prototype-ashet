@@ -354,9 +354,13 @@ console.error(`  ${unifiedPath}`);
 
 // ── STEP 6: Render + acceptance per variant (if ASK_MODE) ───────────────────────
 const askMode = getArg('auto-render', 'false') === 'true';
+// providerCalls: multi-ref does NOT call Vision API. Kimi uses Claude multimodal.
+// If design-spec.json pre-exists → was written by Kimi via write-design-spec.js.
+const providerCalls = 0;
+
 if (!askMode) {
   console.error('\n[multi-ref] Auto-render disabled. Set --auto-render true to proceed automatically.');
-  console.error('stdout: ' + JSON.stringify({ variants: variants.map(v => v.path), unified: unifiedPath }));
+  console.error('stdout: ' + JSON.stringify({ variants: variants.map(v => v.path), unified: unifiedPath, providerCalls }));
   process.exit(0);
 }
 
