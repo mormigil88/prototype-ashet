@@ -133,7 +133,7 @@ function pixelDiffInBbox(prodPng, emptyPng, bbox, threshold = 10) {
   fs.writeFileSync(py, script);
   try {
     const out = execSync(
-      `.venv/bin/python3 "${py}"`,
+      `python3 "${py}"`,
       { cwd: process.env.APP_DIR || __dirname, encoding:'utf8', timeout:20000 }
     ).toString().trim();
     const changed = parseInt(out);

@@ -317,7 +317,7 @@ with sync_playwright() as p:
     print(json.dumps(rects))
 `);
   try {
-    const r = execSync(`cd /Users/andrejorlov/Documents/my-project/neurostaff && .venv/bin/python3 "${py}" "${tmp}" "${outPath}" ${TW} ${TH}`, { timeout: 30000 });
+    const r = execSync(`python3 "${py}" "${tmp}" "${outPath}" ${TW} ${TH}`, { cwd: process.env.APP_DIR || __dirname, timeout: 30000 });
     const rects = JSON.parse(r.toString());
     try { fs.unlinkSync(py); } catch {}
     try { fs.unlinkSync(tmp); } catch {}

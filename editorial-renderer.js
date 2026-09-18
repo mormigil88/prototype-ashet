@@ -466,7 +466,7 @@ with sync_playwright() as p:
 
   try {
     const r = execSync(
-      `.venv/bin/python3 "${py}" "${tmp}" "${outPath}" ${TW} ${TH}`,
+      `python3 "${py}" "${tmp}" "${outPath}" ${TW} ${TH}`,
       { cwd: process.env.APP_DIR || __dirname, timeout: 30000 }
     );
     const parsed = JSON.parse(r.toString());
