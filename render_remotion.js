@@ -106,9 +106,10 @@ async function render() {
   const propsFile = path.join('/tmp', `remotion-props-${Date.now()}.json`);
   fs.writeFileSync(propsFile, JSON.stringify(spec.props || {}));
 
+  // Use local remotion binary from node_modules
+  const remotionBin = path.join(APP_DIR, 'node_modules', '.bin', 'remotion');
   const args = [
-    'npx', '--yes',
-    '@remotion/cli@latest', 'render',
+    remotionBin, 'render',
     spec.compositionId,
     '--props', propsFile,
     '--output', out,
