@@ -85,7 +85,7 @@ const srcHash = crypto.createHash('sha256').update(fs.readFileSync(resolvedPath)
 let srcWidth = 0, srcHeight = 0;
 try {
   const dimOut = execSync(
-    `.venv/bin/python3 -c "from PIL import Image; img = Image.open('${resolvedPath.replace(/'/g, "\\'")}'); print(img.width, img.height)"`,
+    `python3 -c "from PIL import Image; img = Image.open('${resolvedPath.replace(/'/g, "\\'")}'); print(img.width, img.height)"`,
     { cwd: process.env.APP_DIR || __dirname, timeout: 10000 }
   ).toString().trim().split(' ');
   srcWidth = parseInt(dimOut[0]);

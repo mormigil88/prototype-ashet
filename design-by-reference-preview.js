@@ -173,37 +173,130 @@ const specFor = (vi) => specs[vi] || { palette: DEFAULT_PALETTE, typography: DEF
 // ── Step 3: Build 2 variants ────────────────────────────────────────────
 console.error('\n=== VARIANT GENERATION ===');
 
-// Variant palette assignments (alternating per reference)
-const variantDefs = [
-  {
-    label: 'Variant 1 — Portrait Editorial',
-    description: neutral
-      ? 'Full-height gradient overlay, headline in sans-serif at bottom. Neutral palette (--neutral mode, no Vision).'
-      : 'Full-height gradient overlay, headline in sans-serif at bottom. Uses palette from ref-1.',
-    compositionClass: 'portrait-editorial-full-overlay',
-    palette: specFor(0).palette,
-    typography: specFor(0).typography,
-    components: [
-      { type: 'PhotoBackground', zone: { x:0, y:0, width:1080, height:1350 } },
-      { type: 'GradientOverlay', zone: { x:0, y:0, width:1080, height:1350 }, background:{value:'rgba(0,0,0,0)'}, opacity:0 },
-      { type: 'HeroTitle', zone: { x:60, y:1050, width:960, height:200 }, foreground:{value:'#ffffff'} },
-    ],
-  },
-  {
-    label: 'Variant 2 — Photo Editorial Bottom',
-    description: neutral
-      ? 'Gradient overlay on bottom half only, headline in serif overlaid on photo. Neutral palette (--neutral mode, no Vision).'
-      : 'Gradient overlay on bottom half only, headline in serif overlaid on photo. Uses palette from ref-2.',
-    compositionClass: 'photo-editorial-bottom-overlay',
-    palette: specFor(1).palette,
-    typography: specFor(1).typography,
-    components: [
-      { type: 'PhotoBackground', zone: { x:0, y:0, width:1080, height:1350 } },
-      { type: 'GradientOverlay', zone: { x:0, y:900, width:1080, height:450 }, background:{value:'rgba(0,0,0,0.65)'}, opacity:65 },
-      { type: 'HeroTitle', zone: { x:60, y:800, width:960, height:160 }, foreground:{value:'#ffffff'} },
-    ],
-  },
-];
+// Build variants from Vision spec — NOT hardcoded
+// Each variant uses ONE reference's spec as its basis, then maps to components
+const variantDefs = refs.map((ref, vi) => {
+  const spec = specs[vi % specs.length] || {};
+  const hasDecorative = (spec.decorativeElements || []).length > 0;
+  const hasEyebrow = !!(spec.typographyHierarchy?.eyebrow?.text);
+  const hasSubheading = !!(spec.typographyHierarchy?.subheading?.text);
+  const bgDesc = spec.backgroundDescription || '';
+  const isLuxury = bgDesc.match(/marble|sculpture|statue|luxury|gold|ornament|dark/i);
+
+  // Build component list from Vision spec, with renderer-ready fallbacks
+  const comps = [];
+
+  // 1. Background — solid/gradient from palette (PhotoBackground is for when user provides separate asset)
+  const bgType = spec.background?.type || 'gradient';
+  const bgColors = (spec.background?.colors || []).map(c => c.value);
+  if (bgType === 'gradient' && bgColors.length >= 2) {
+    comps.push({
+      type: 'GradientOverlay',
+      zone: { x:0, y:0, width:1080, height:1350 },
+      background: { value: bgColors[0] },
+      opacity: isLuxury ? 75 : 60
+    });
+  } else {
+    comps.push({
+      type: 'GradientOverlay',
+      zone: { x:0, y:0, width:1080, height:1350 },
+      background: { value: spec.palette?.background?.value || '#1a1a1a' },
+      opacity: isLuxury ? 80 : 65
+    });
+  }
+
+  // 2. Decorative border if detected
+  if (hasDecorative) {
+    const borderEl = (spec.decorativeElements || []).find(e => e.type === 'border' || e.type === 'frame');
+    if (borderEl) {
+      comps.push({
+        type: 'DecorativeBorder',
+        zone: { x:30, y:30, width:1020, height:1290 },
+        foreground: { value: borderEl.color || spec.palette?.accent?.value || '#C9A86A' },
+        borderWidth: borderEl.width || 1
+      });
+    }
+    // Gold accent lines
+    const accentLines = (spec.decorativeElements || []).filter(e => e.type === 'accent_line' || e.type === 'rule');
+    accentLines.slice(0, 2).forEach((el, i) => {
+      comps.push({
+        type: 'GoldAccentLine',
+        zone: { x:60, y: 720 + i * 30, width: el.width || 160, height: 2 },
+        foreground: { value: el.color || '#C9A86A' }
+      });
+    });
+  }
+
+  // 3. Eyebrow text (small label above main headline)
+  if (hasEyebrow) {
+    comps.push({
+      type: 'EyebrowText',
+      zone: { x:60, y: isLuxury ? 80 : 100, width:960, height: 36 },
+      foreground: { value: spec.palette?.accent?.value || '#C9A86A' },
+      text: spec.typographyHierarchy.eyebrow.text
+    });
+  }
+
+  // 4. Subheading (if present)
+  if (hasSubheading) {
+    comps.push({
+      type: 'SubheadingText',
+      zone: { x:60, y: hasEyebrow ? 125 : 100, width:960, height: 60 },
+      foreground: { value: spec.palette?.textSecondary?.value || '#cccccc' },
+      text: spec.typographyHierarchy.subheading.text
+    });
+  }
+
+  // 5. Hero Title — positioned at bottom third for photo backgrounds
+  const titleY = isLuxury ? 820 : (hasEyebrow ? 900 : 850);
+  comps.push({
+    type: 'HeroTitle',
+    zone: { x:60, y: titleY, width:960, height: isLuxury ? 220 : 180 },
+    foreground: { value: '#ffffff' }
+  });
+
+  // 6. Body text zone
+  comps.push({
+    type: 'BodyText',
+    zone: { x:60, y: titleY + 230, width:960, height: 120 },
+    foreground: { value: '#ffffff' }
+  });
+
+  // 7. CTA if content provided
+  if (content.ctaText) {
+    comps.push({
+      type: 'CTABlock',
+      zone: { x:60, y: 1200, width:960, height: 80 },
+      background: { value: spec.palette?.primary?.value || '#8B1E2D' }
+    });
+  }
+
+  const bgTypeLabel = spec.background?.type || 'gradient';
+  const description = [
+    `Background: ${bgTypeLabel}`,
+    spec.backgroundDescription ? `Scene: ${spec.backgroundDescription.substring(0, 50)}` : '',
+    hasEyebrow ? `+ eyebrow label` : '',
+    hasSubheading ? `+ subheading` : '',
+    hasDecorative ? `+ decorative elements` : '',
+    isLuxury ? ' (luxury editorial)' : ''
+  ].filter(Boolean).join(', ');
+
+  return {
+    label: `Variant ${vi+1} — ${spec.compositionClass || (isLuxury ? 'Luxury Editorial' : 'Editorial')}`,
+    description,
+    compositionClass: spec.compositionClass || (isLuxury ? 'luxury-editorial' : 'editorial'),
+    palette: spec.palette || specFor(vi).palette,
+    typography: {
+      ...(spec.typography || {}),
+      eyebrow: spec.typographyHierarchy?.eyebrow || undefined,
+      subheading: spec.typographyHierarchy?.subheading || undefined
+    },
+    components: comps,
+    backgroundDescription: spec.backgroundDescription,
+    decorativeElements: spec.decorativeElements || [],
+    typographyHierarchy: spec.typographyHierarchy,
+  };
+});
 
 const variants = variantDefs.map((def, vi) => {
   const ref = refs[vi % refs.length];

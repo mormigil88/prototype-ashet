@@ -82,10 +82,12 @@ class OpenRouterVisionProvider extends VisionProvider {
     const COMPONENT_TYPES = [
       'MobileStatusBar', 'AppHeader', 'IncomingChatBubble', 'OutgoingChatBubble',
       'ChatComposer', 'KeyboardPlaceholder', 'PrimaryActionButton', 'HeroTitle',
-      'SolutionCard', 'BulletList', 'GradientOverlay', 'Custom'
+      'SolutionCard', 'BulletList', 'GradientOverlay', 'DecorativeBorder',
+      'GoldAccentLine', 'EyebrowText', 'SubheadingText', 'Custom'
     ].join('|');
 
-    const compactPrompt = `Analyze this mobile chat UI screenshot. Return ONLY valid JSON (no markdown fences, no explanation).
+    const compactPrompt = `Analyze this design screenshot. It can be a mobile chat UI, social media carousel, editorial post, or any graphic design.
+Return ONLY valid JSON (no markdown fences, no explanation).
 
 Output schema:
 {
@@ -103,7 +105,9 @@ Output schema:
   "typography": {
     "heading":{"fontFamily":"name","fontSize":"Npx","fontWeight":"bold|normal","lineHeight":"1.0-2.0","confidence":0.0-1.0},
     "body":{"fontFamily":"name","fontSize":"Npx","fontWeight":"bold|normal","lineHeight":"1.0-2.0","confidence":0.0-1.0},
-    "caption":{"fontFamily":"name","fontSize":"Npx","fontWeight":"normal","confidence":0.0-1.0}
+    "caption":{"fontFamily":"name","fontSize":"Npx","fontWeight":"normal","confidence":0.0-1.0},
+    "eyebrow":{"fontFamily":"name","fontSize":"Npx","fontWeight":"bold|normal","letterSpacing":"Npx","text":"content","confidence":0.0-1.0},
+    "subheading":{"fontFamily":"name","fontSize":"Npx","fontWeight":"normal","text":"content","confidence":0.0-1.0}
   },
   "safeArea": {"top":N,"right":N,"bottom":N,"left":N},
   "components": [
@@ -124,7 +128,16 @@ Output schema:
       "unsupported": false
     }
   ],
-  "background": {"type":"solid|gradient","colors":[{"value":"#RRGGBB","confidence":0.0-1.0}],"gradientDirection":"to bottom|..."},
+  "background": {"type":"solid|gradient|photo","colors":[{"value":"#RRGGBB","confidence":0.0-1.0}],"gradientDirection":"to bottom|...","description":"describe the background visual content"},
+  "backgroundDescription": "Describe the main visual content of the background (e.g. marble sculpture in museum, dark office interior, forest landscape). Do NOT copy brand names, faces, or identifiable people.",
+  "decorativeElements": [
+    {"type":"border|accent_line|frame|rule","color":"#RRGGBB","width":N,"position":"top|bottom|left|right|center","confidence":0.0-1.0}
+  ],
+  "typographyHierarchy": {
+    "eyebrow":{"fontFamily":"name","fontSize":"Npx","fontWeight":"bold|normal","letterSpacing":"Npx","text":"eyebrow label text"},
+    "subheading":{"fontFamily":"name","fontSize":"Npx","fontWeight":"normal","text":"subheading text"},
+    "confidence": 0.0-1.0
+  },
   "lowConfidenceFields": ["field1","field2"],
   "confidence": 0.0-1.0
 }
@@ -135,6 +148,9 @@ Rules:
 - Components with confidence<0.6 must be listed in lowConfidenceFields
 - estimate borderRadius in pixels (0=none, 4=light, 12=medium, 20=heavy, 50=pill)
 - tailDirection: where the chat bubble triangle points (left=incoming, right=outgoing)
+- backgroundDescription: describe the main visual content (museum, architecture, nature, etc.) WITHOUT copying identifiable text or faces
+- decorativeElements: note any border frames, accent lines, horizontal rules, ornamental dividers — estimate color and position
+- typographyHierarchy: if there is a small eyebrow label above the main headline, or a subheading below it — capture all text levels
 - Return ONLY JSON starting with {`;
 
     const r1 = await this._call([{type:'image_url',image_url:{url:imageUrl}},{type:'text',text:compactPrompt}]);
@@ -276,10 +292,12 @@ class MiniMaxVisionProvider extends VisionProvider {
     const COMPONENT_TYPES = [
       'MobileStatusBar', 'AppHeader', 'IncomingChatBubble', 'OutgoingChatBubble',
       'ChatComposer', 'KeyboardPlaceholder', 'PrimaryActionButton', 'HeroTitle',
-      'SolutionCard', 'BulletList', 'GradientOverlay', 'Custom'
+      'SolutionCard', 'BulletList', 'GradientOverlay', 'DecorativeBorder',
+      'GoldAccentLine', 'EyebrowText', 'SubheadingText', 'Custom'
     ].join('|');
 
-    const prompt = `Analyze this design screenshot (mobile chat UI OR social media / editorial carousel). Return ONLY valid JSON, no markdown fences.
+    const prompt = `Analyze this design screenshot. It can be a mobile chat UI, social media carousel, editorial post, or any graphic design.
+Return ONLY valid JSON, no markdown fences.
 
 Allowed component types: ${COMPONENT_TYPES}
 Choose the type that best matches each visual element.
@@ -300,7 +318,9 @@ Required JSON structure:
   "typography": {
     "heading":{"fontFamily":"name","fontSize":"Npx","fontWeight":"bold|normal","lineHeight":"1.0-2.0","confidence":0.0-1.0},
     "body":{"fontFamily":"name","fontSize":"Npx","fontWeight":"bold|normal","lineHeight":"1.0-2.0","confidence":0.0-1.0},
-    "caption":{"fontFamily":"name","fontSize":"Npx","confidence":0.0-1.0}
+    "caption":{"fontFamily":"name","fontSize":"Npx","fontWeight":"normal","confidence":0.0-1.0},
+    "eyebrow":{"fontFamily":"name","fontSize":"Npx","fontWeight":"bold|normal","letterSpacing":"Npx","text":"content","confidence":0.0-1.0},
+    "subheading":{"fontFamily":"name","fontSize":"Npx","fontWeight":"normal","text":"content","confidence":0.0-1.0}
   },
   "safeArea": {"top":N,"right":N,"bottom":N,"left":N},
   "components": [
@@ -320,7 +340,16 @@ Required JSON structure:
       "unsupported": false
     }
   ],
-  "background": {"type":"solid|gradient","colors":[{"value":"#RRGGBB","confidence":0.0-1.0}],"gradientDirection":"..."},
+  "background": {"type":"solid|gradient|photo","colors":[{"value":"#RRGGBB","confidence":0.0-1.0}],"gradientDirection":"...","description":"describe background visual"},
+  "backgroundDescription": "Describe the main visual content (e.g. marble sculpture, dark office, forest). Do NOT copy brand names, faces, or identifiable people.",
+  "decorativeElements": [
+    {"type":"border|accent_line|frame|rule","color":"#RRGGBB","width":N,"position":"top|bottom|left|right|center","confidence":0.0-1.0}
+  ],
+  "typographyHierarchy": {
+    "eyebrow":{"fontFamily":"name","fontSize":"Npx","fontWeight":"bold|normal","letterSpacing":"Npx","text":"eyebrow label"},
+    "subheading":{"fontFamily":"name","fontSize":"Npx","fontWeight":"normal","text":"subheading text"},
+    "confidence": 0.0-1.0
+  },
   "lowConfidenceFields": ["field1"],
   "confidence": 0.0-1.0
 }
@@ -330,7 +359,10 @@ Rules:
 - Set unsupported:true for component types you cannot render faithfully
 - borderRadius: 0=none, 4=light, 12=medium, 20=heavy, 50=pill
 - tailDirection: left=incoming bubble, right=outgoing bubble
-- Components with confidence<0.6 must be listed in lowConfidenceFields`;
+- Components with confidence<0.6 must be listed in lowConfidenceFields
+- backgroundDescription: describe the background visual content WITHOUT copying text, faces, or brand names
+- decorativeElements: note any border frames, accent lines, horizontal rules, ornamental dividers
+- typographyHierarchy: capture all text levels — eyebrow above headline, subheading below headline`;
 
     const response = await fetch(this.baseUrl, {
       method: 'POST',

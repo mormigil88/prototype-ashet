@@ -16,6 +16,10 @@ const { renderCTABlock } = require('./components/cta-block');
 const { renderHeroTitle } = require('./components/hero-title');
 const { renderGradientOverlay } = require('./components/gradient-overlay');
 const { renderBodyText } = require('./components/body-text');
+const { renderDecorativeBorder } = require('./components/decorative-border');
+const { renderGoldAccentLine } = require('./components/gold-accent-line');
+const { renderEyebrowText } = require('./components/eyebrow-text');
+const { renderSubheadingText } = require('./components/subheading-text');
 
 const getArg = (name, defaultVal) => {
   const idx = process.argv.indexOf('--' + name);
@@ -76,6 +80,10 @@ const componentMap = {
   HeroTitle: renderHeroTitle,
   GradientOverlay: renderGradientOverlay,
   BodyText: renderBodyText,
+  DecorativeBorder: renderDecorativeBorder,
+  GoldAccentLine: renderGoldAccentLine,
+  EyebrowText: renderEyebrowText,
+  SubheadingText: renderSubheadingText,
 };
 
 // ─── FOCAL POINT & TEXT SAFE ZONE ───────────────────────────────────────────
@@ -189,6 +197,23 @@ for (const comp of (spec.components || [])) {
     extra.fontSize = parseInt(spec.typography?.body?.fontSize || '24');
     extra.fontFamily = spec.typography?.body?.fontFamily || 'Inter, sans-serif';
     extra.lineHeight = spec.typography?.body?.lineHeight || '1.5';
+  } else if (comp.type === 'EyebrowText') {
+    extra.text = content.eyebrow || spec.typography?.eyebrow?.text || '';
+    extra.fontSize = parseInt(spec.typography?.eyebrow?.fontSize || '14');
+    extra.fontFamily = spec.typography?.eyebrow?.fontFamily || 'Arial, sans-serif';
+    extra.fontWeight = spec.typography?.eyebrow?.fontWeight || 'bold';
+    extra.letterSpacing = spec.typography?.eyebrow?.letterSpacing || '3';
+  } else if (comp.type === 'SubheadingText') {
+    extra.text = content.subheading || spec.typography?.subheading?.text || '';
+    extra.fontSize = parseInt(spec.typography?.subheading?.fontSize || '24');
+    extra.fontFamily = spec.typography?.subheading?.fontFamily || 'Georgia, serif';
+    extra.fontWeight = spec.typography?.subheading?.fontWeight || 'normal';
+  } else if (comp.type === 'DecorativeBorder') {
+    extra.borderColor = comp.foreground?.value || '#C9A86A';
+    extra.borderWidth = comp.borderWidth || 1;
+  } else if (comp.type === 'GoldAccentLine') {
+    extra.lineColor = comp.foreground?.value || '#C9A86A';
+    extra.lineHeight = comp.borderWidth || 2;
   }
 
   const renderer = componentMap[comp.type];
@@ -209,7 +234,7 @@ for (const comp of (spec.components || [])) {
 }
 
 // ── Build HTML (production or debug) ────────────────────────────────────────
-const zOrder = ['GradientOverlay', 'HeroTitle', 'BodyText', 'AccentText', 'OverlayCard', 'ListBlock', 'CTABlock', 'CTA'];
+const zOrder = ['GradientOverlay', 'DecorativeBorder', 'GoldAccentLine', 'EyebrowText', 'SubheadingText', 'HeroTitle', 'BodyText', 'AccentText', 'OverlayCard', 'ListBlock', 'CTABlock', 'CTA'];
 const orderedHtml = [bgHtml, ...zOrder.map(t => rendered[t]).filter(Boolean)].join('\n');
 
 let html;
