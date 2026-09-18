@@ -84,7 +84,9 @@ if [ "$SESSION_JSONL_COUNT" -gt 0 ]; then
     CLAUDE_CMD="$CLAUDE_CMD --continue"
     echo "[entrypoint] предыдущая сессия найдена + PROMPT_VERSION совпадает — продолжаем (--continue)"
   else
-    echo "[entrypoint] PROMPT_VERSION изменилась или первый запуск — новая сессия (игнорируем старые jsonl)"
+    echo "[entrypoint] PROMPT_VERSION изменилась — удаляю старые сессии, запускаю новую"
+    rm -f /data/claude-home/projects/-app/*.jsonl
+    rm -f /data/claude-home/.prompt-version
   fi
 else
   echo "[entrypoint] предыдущих сессий не найдено — новая сессия"
