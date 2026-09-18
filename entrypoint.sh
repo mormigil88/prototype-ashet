@@ -1,13 +1,16 @@
 #!/bin/bash
 set -e
 
+# === PERSISTENT CONFIG DIR ===
+export HOME=/data/claude-home
+export CLAUDE_CONFIG_DIR=/data/claude-home
+
 # /data/canva — реестр Canva-ссылок (canva_link.js пишет из-под node; сам /data
 # root-owned, поэтому директория создаётся и отдаётся node здесь, до su).
 mkdir -p /data/root-dotclaude /data/claude-home /data/memory /data/canva /data/heygen
 chown -R node:node /data/root-dotclaude /data/claude-home /data/memory /data/canva /data/heygen
 chmod 700 /data/canva /data/heygen
-ln -sfn /data/root-dotclaude /home/node/.claude
-chown -h node:node /home/node/.claude
+# HOME=/data/claude-home и CLAUDE_CONFIG_DIR=/data/claude-home — симлинк /home/node/.claude не нужен
 
 # Гарантируем админу доступ к боту при каждом старте — access.json плагина
 # telegram@claude-plugins-official живёт в $CLAUDE_CONFIG_DIR (persistent volume,
@@ -69,20 +72,32 @@ chown node:node /app/CLAUDE.md
 # Отдельный процесс, не мешает claude (не трогает его stdin/stdout/pty).
 su -p node -c 'node /app/companion.js' &
 
-# Продолжаем последнюю сессию, если на persistent volume уже есть JSONL-транскрипт —
-# иначе каждый редеплой начинал новую сессию Claude Code и короткий разговор
-# (2-7 реплик, обычный для Ольги) терялся, даже если факты/summary выше уже
-# подгружены. Первый запуск/новый volume — без --continue (сессий ещё нет).
+# Продолжаем последнюю сессию, если:
+# - есть JSONL-транскрипт в /data/claude-home/projects/-app/
+# - И переменная PROMPT_VERSION НЕ изменилась (иначе старый контекст сессии противоречит новому промпту)
 CLAUDE_CMD="claude --ax-screen-reader --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions"
-if compgen -G "/data/claude-home/projects/-app/*.jsonl" > /dev/null 2>&1; then
-  CLAUDE_CMD="$CLAUDE_CMD --continue"
-  echo "[entrypoint] найдена предыдущая сессия — продолжаем (--continue)"
+PREV_SUMMARY_FILE="/data/claude-home/.prompt-version"
+SESSION_JSONL_COUNT=$(compgen -G "/data/claude-home/projects/-app/*.jsonl" 2>/dev/null | wc -l)
+
+if [ "$SESSION_JSONL_COUNT" -gt 0 ]; then
+  if [ -f "$PREV_SUMMARY_FILE" ] && [ "$(cat "$PREV_SUMMARY_FILE" 2>/dev/null)" = "${PROMPT_VERSION:-default}" ]; then
+    CLAUDE_CMD="$CLAUDE_CMD --continue"
+    echo "[entrypoint] предыдущая сессия найдена + PROMPT_VERSION совпадает — продолжаем (--continue)"
+  else
+    echo "[entrypoint] PROMPT_VERSION изменилась или первый запуск — новая сессия (игнорируем старые jsonl)"
+  fi
 else
   echo "[entrypoint] предыдущих сессий не найдено — новая сессия"
 fi
 
-# The persistent dev volume has already stored its terminal-theme choice. The
-# remaining bypass confirmation renders asynchronously and requires a separate
-# Enter after choosing y. Keep stdin open afterwards; an EOF would be treated as
-# Ctrl-D/quit by the channels process.
-exec env HOME=/home/node su -p node -c "{ sleep 15; printf 'y\\n'; sleep 45; printf '\\n'; tail -f /dev/null; } | script -qec \"$CLAUDE_CMD\" /data/claude-home/claude-stdout.log"
+# Сохраняем текущую PROMPT_VERSION для следующего старта
+mkdir -p /data/claude-home
+echo "${PROMPT_VERSION:-default}" > "$PREV_SUMMARY_FILE"
+
+# CLAUDE_CONFIG_DIR теперь выставлен выше; Claude найдёт .claude.json с hasCompletedOnboarding:true.
+# Startup-логи — видны в railway logs
+echo "[entrypoint] config ready"
+echo "[entrypoint] prompt version ${PROMPT_VERSION:-default} fresh session"
+echo "[entrypoint] channels starting"
+
+exec env HOME=/data/claude-home su -p node -c "script -qec \"$CLAUDE_CMD\" /data/claude-home/claude-stdout.log"
