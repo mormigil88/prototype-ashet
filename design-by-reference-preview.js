@@ -170,6 +170,29 @@ const DEFAULT_TYPOGRAPHY = {
 };
 const specFor = (vi) => specs[vi] || { palette: DEFAULT_PALETTE, typography: DEFAULT_TYPOGRAPHY };
 
+// ── Background prompt builder ─────────────────────────────────────────────
+function buildBackgroundPrompt(def) {
+  const desc = def.backgroundDescription || '';
+  const palette = def.palette || {};
+  const accent = palette.accent?.value || '#C9A86A';
+  const primary = palette.primary?.value || '#8B1E2D';
+
+  // If Vision detected a photo/illustration background, generate an editorial background
+  if (desc && !desc.match(/solid|gradient|plain/i)) {
+    return `Editorial art-deco style background: ${desc}.
+Use a licensed stock photo or generate via MiniMax.
+Style: luxury editorial, dark moody atmosphere, ${accent} gold accents.
+Palette: background ${palette.background?.value || '#1a1a1a'}, accent ${accent}, primary ${primary}.
+Do NOT include any text. Vertical 1080x1350.`;
+  }
+  // Luxury fallback when no description
+  if (def.label.match(/luxury|Luxury|marble|sculpture/i)) {
+    return `Dark luxury editorial background. Marble texture or dark atmospheric interior.
+Style: ${accent} gold accents on dark background. Vertical 1080x1350. No text.`;
+  }
+  return null; // use gradient only
+}
+
 // ── Step 3: Build 2 variants ────────────────────────────────────────────
 console.error('\n=== VARIANT GENERATION ===');
 
@@ -247,26 +270,37 @@ const variantDefs = refs.map((ref, vi) => {
     });
   }
 
-  // 5. Hero Title — positioned at bottom third for photo backgrounds
-  const titleY = isLuxury ? 820 : (hasEyebrow ? 900 : 850);
+  // Safe-area: bottom margin 8% = 108px on 1350px canvas
+  const BOTTOM_SAFE = 108;
+  const CANVAS_H = 1350;
+  const MAX_CONTENT_BOTTOM = CANVAS_H - BOTTOM_SAFE; // 1242px
+
+  // 5. Hero Title — bottom third, respecting safe-area
+  const titleH = isLuxury ? 200 : 160;
+  const bodyH = 110;
+  const ctaH = content.ctaText ? 70 : 0;
+  const ctaY = MAX_CONTENT_BOTTOM - ctaH;
+  const bodyY = ctaY - bodyH - 16; // 16px gap
+  const titleY = bodyY - titleH - 20; // 20px gap
+
   comps.push({
     type: 'HeroTitle',
-    zone: { x:60, y: titleY, width:960, height: isLuxury ? 220 : 180 },
+    zone: { x:60, y: titleY, width:960, height: titleH },
     foreground: { value: '#ffffff' }
   });
 
   // 6. Body text zone
   comps.push({
     type: 'BodyText',
-    zone: { x:60, y: titleY + 230, width:960, height: 120 },
+    zone: { x:60, y: bodyY, width:960, height: bodyH },
     foreground: { value: '#ffffff' }
   });
 
-  // 7. CTA if content provided
+  // 7. CTA if content provided — always respect safe-area
   if (content.ctaText) {
     comps.push({
       type: 'CTABlock',
-      zone: { x:60, y: 1200, width:960, height: 80 },
+      zone: { x:60, y: ctaY, width:960, height: ctaH },
       background: { value: spec.palette?.primary?.value || '#8B1E2D' }
     });
   }
@@ -307,12 +341,19 @@ const variants = variantDefs.map((def, vi) => {
     variantDescription: def.description,
     sourceReferenceHash: ref.hash,
     sourceReferencePath: ref.rawPath,
-    // backgroundAsset: to be filled by user from safe assets
+    // backgroundAsset: to be filled before render — see backgroundPrompt below
     compositionClass: def.compositionClass,
     fidelity: 'close',
     palette: def.palette,
     typography: def.typography,
     components: def.components,
+    // KEY: carry Vision-detected fields through to renderer
+    backgroundDescription: def.backgroundDescription || '',
+    backgroundPrompt: buildBackgroundPrompt(def),
+    decorativeElements: def.decorativeElements || [],
+    typographyHierarchy: def.typographyHierarchy || null,
+    // Safe-area: enforce bottom margin (8% = ~108px on 1350px height)
+    safeArea: { bottom: Math.round(1350 * 0.08) }, // prevents bottom elements from touching edge
     sourceCanvas: { width:1080, height:1350 },
     targetCanvas: { width:1080, height:1350 },
     appliedTokens: ['heading.fontFamily','body.fontFamily','caption.fontFamily'],
@@ -329,16 +370,30 @@ const variants = variantDefs.map((def, vi) => {
 // ── Step 4: Show preview table (NO render) ────────────────────────────────
 console.error('\n=== PREVIEW (no render yet) ===');
 console.error('');
-console.error('┌─────────────────────────────────────────────────────────────────────┐');
-console.error('│                    DESIGN BY REFERENCE — PREVIEW                     │');
-console.error('├────┬────────────────────────┬──────────────┬────────────────────────┤');
-console.error('│    │ Label                  │ Composition  │ Components              │');
-console.error('├────┼────────────────────────┼──────────────┼────────────────────────┤');
+console.error('┌─────────────────────────────────────────────────────────────────────────────────────┐');
+console.error('│                         DESIGN BY REFERENCE — PREVIEW                                  │');
+console.error('├────┬──────────────────────────┬────────────────────┬──────────────────────────────────┤');
+console.error('│    │ Label                    │ Composition        │ Components                        │');
+console.error('├────┼──────────────────────────┼────────────────────┼──────────────────────────────────┤');
 for (const v of variants) {
   const comps = v.def.components.map(c => c.type).join('+');
-  console.error(`│ ${v.index+1}  │ ${(v.def.label).padEnd(22)} │ ${(v.def.compositionClass).padEnd(12)} │ ${comps.padEnd(22)} │`);
+  console.error(`│ ${v.index+1}  │ ${(v.def.label).padEnd(24)} │ ${(v.def.compositionClass).padEnd(18)} │ ${comps.padEnd(32)} │`);
 }
-console.error('└────┴────────────────────────┴──────────────┴────────────────────────┘');
+console.error('└────┴──────────────────────────┴────────────────────┴──────────────────────────────────┘');
+console.error('');
+
+// Background prompt for each variant — Kimi must generate/retrieve asset before rendering
+console.error('=== BACKGROUND ASSETS REQUIRED ===');
+for (const v of variants) {
+  const bp = v.variant.backgroundPrompt;
+  if (bp) {
+    console.error(`[variant ${v.index+1}] BACKGROUND PROMPT (generate before render):`);
+    console.error(`  ${bp}`);
+    console.error(`  → Save to: /data/backgrounds/variant-${v.index+1}-bg.png`);
+  } else {
+    console.error(`[variant ${v.index+1}] No backgroundPrompt — using gradient only`);
+  }
+}
 console.error('');
 console.error('Content fields:');
 for (const [k, v] of Object.entries(content)) {
