@@ -77,7 +77,7 @@ function runPreflight(p) {
 function dims(p) {
   try {
     const out = execSync(
-      `.venv/bin/python3 -c "from PIL import Image; i=Image.open('${p.replace(/'/g, "\\'")}'); print(i.width, i.height)"`,
+      `python3 -c "from PIL import Image; i=Image.open('${p.replace(/'/g, "\\'")}'); print(i.width, i.height)"`,
       { cwd: process.env.APP_DIR || __dirname, timeout: 10000 }
     ).toString().trim().split(' ').map(Number);
     return { w: out[0], h: out[1] };
