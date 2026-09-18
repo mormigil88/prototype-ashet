@@ -387,11 +387,40 @@ node /app/generate_image.js "<промпт на английском>" [square|s
 - Руки/пальцы — самое слабое место любой AI-модели, избегай крупных планов рук
 - Если скрипт вернул ошибку — скажи прямо, не выдавай старое фото за результат
 
-## Как оживить фото в видео (Runway) — НЕ РАБОТАЕТ пока
+## Как оживить фото в видео — Remotion (бесплатно) и Runway (платно)
 
-`RUNWAY_API_KEY` отсутствует. Если попросит — скажи то же, что про OpenAI: ключ не загружен, могу подготовить промпт движения под будущую генерацию, но сам вызов упадёт.
+### Remotion — Editorial Reel (бесплатно, Chromium в контейнере)
 
-Когда Ира зальёт `RUNWAY_API_KEY`:
+Remotion рендерит MP4 из React-компонентов через локальный Chromium + ffmpeg.
+Бесплатно, без внешних API. Работает уже сейчас.
+
+**Pipeline:**
+```
+1. Storyboard → текст + структура (headline/body/CTA)
+2. Покажи вариант — без рендера
+3. Подтверждение → render_remotion.js → MP4 → ffprobe → reply
+```
+
+**Рендер:**
+```bash
+# Minimal: только composition ID + props
+node /app/render_remotion.js \
+  --composition EditorialReel \
+  --props '{"headline":"Заголовок","bodyText":"Подзаголовок","ctaText":"Кнопка","durationInSeconds":15}' \
+  --out /tmp/reel.mp4
+
+# Spec-based (matching design-spec pipeline)
+node /app/render_remotion.js --spec /tmp/video-spec.json --out /tmp/reel.mp4
+```
+
+**Ожидаемый output:** MP4 1080×1920, 30 fps, 10–30 секунд.
+Проверка: `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,duration -of json /tmp/reel.mp4`
+
+**Шаблон EditorialReel** — 9:16 вертикальный ролик: заголовок → подзаголовок → CTA на gradient/image-фоне с анимацией появления.
+
+### Runway — оживление фото (платно)
+
+Если есть `RUNWAY_API_KEY`:
 
 ```bash
 node /app/generate_video.js <путь-к-фото> "<промпт движения на английском>" [5|10] [story|square|landscape]

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Rebuild: 2026-09-17 — Design by Reference pipeline
+# 2026-09-18 — Remotion video rendering + Design by Reference pipeline
 FROM node:20-bookworm-slim
 
 # ─── System dependencies ──────────────────────────────────────────────────────
@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     libjpeg62-turbo \
     python3 python3-pip python3-venv \
+    chromium \
     && rm -rf /var/lib/apt/lists/*
 
 # TESSDATA_PREFIX for tesseract-ocr (Debian path)
@@ -39,6 +40,11 @@ RUN npm install -g @anthropic-ai/claude-code
 # APP_DIR is the canonical location for all pipeline scripts
 ENV APP_DIR="/app"
 
+# ─── Remotion video rendering ───────────────────────────────────────────────
+COPY remotion/ /app/remotion/
+COPY render_remotion.js /app/render_remotion.js
+COPY video-spec.schema.json /app/video-spec.schema.json
+
 # ─── Pipeline files (Design by Reference) ─────────────────────────────────
 COPY preflight.py /app/preflight.py
 COPY design-analyzer.js /app/design-analyzer.js
@@ -53,7 +59,13 @@ COPY components/ /app/components/
 
 # ─── Node dependencies ──────────────────────────────────────────────────────
 WORKDIR /app
-RUN npm install --no-save @aws-sdk/client-s3@3.1120.0
+RUN npm install --no-save \
+    @aws-sdk/client-s3@3.1120.0 \
+    remotion@4.0.493 \
+    @remotion/renderer@4.0.493 \
+    @remotion/cli@4.0.493 \
+    react@19.2.3 \
+    react-dom@19.2.3
 
 # ─── App files ────────────────────────────────────────────────────────────
 COPY companion.js /app/companion.js

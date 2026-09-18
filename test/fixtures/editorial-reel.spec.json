@@ -1,0 +1,20 @@
+{
+  "compositionId": "EditorialReel",
+  "width": 1080,
+  "height": 1920,
+  "fps": 30,
+  "durationInSeconds": 15,
+  "props": {
+    "headline": "Тест ролика",
+    "bodyText": "Проверка Remotion pipeline",
+    "ctaText": "Сохранить",
+    "accentText": "EDITORIAL",
+    "backgroundColor": "#0A0A0A",
+    "durationInSeconds": 15,
+    "palette": {
+      "background": "#0A0A0A",
+      "text": "#FFFFFF",
+      "accent": "#0FB5AE"
+    }
+  }
+}

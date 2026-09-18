@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Remotion video spec",
+  "type": "object",
+  "required": ["compositionId"],
+  "properties": {
+    "compositionId": {
+      "type": "string",
+      "description": "ID composition из Remotion (например EditorialReel, Day09, Day10)"
+    },
+    "width": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1080
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1920
+    },
+    "fps": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 30
+    },
+    "durationInSeconds": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 300
+    },
+    "props": {
+      "type": "object",
+      "description": "Props, передаваемые в React-компонент composition"
+    },
+    "outPath": {
+      "type": "string",
+      "description": "Путь для сохранения MP4 (по умолчанию /tmp/remotion-<id>-<ts>.mp4)"
+    }
+  },
+  "additionalProperties": false
+}
