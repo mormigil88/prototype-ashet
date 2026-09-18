@@ -114,11 +114,12 @@ async function render() {
     '--props', propsFile,
     '--output', out,
     '--log',
+    '--project-root', remotionDir,
   ];
 
   try {
     const result = execSync(args.join(' '), {
-      cwd: remotionDir,
+      cwd: APP_DIR, // must be /app so node_modules/.bin/remotion is resolved
       env: { ...process.env, REMOTION_CHROMIUM_PATH: process.env.REMOTION_CHROMIUM_PATH || '' },
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 300000, // 5 min max
