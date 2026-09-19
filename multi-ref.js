@@ -50,6 +50,7 @@ const refPaths    = getList('refs').filter(Boolean);
 const outputDir   = getArg('output-dir', '/tmp/multi-ref');
 const contentArg = getArg('content-json', '');
 const fidelity   = getArg('fidelity', 'close');
+const skipPreflight = process.argv.includes('--skip-preflight');
 
 if (refPaths.length < 2) {
   console.error('Usage: node multi-ref.js --refs ref1.png ref2.png [ref3.png] --output-dir <dir> [--content-json <json>]');
@@ -57,12 +58,13 @@ if (refPaths.length < 2) {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+const APP_DIR = process.env.APP_DIR || __dirname;
+
 function sha256(p) {
   return crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 }
 
 function runPreflight(p) {
-  const APP_DIR = process.env.APP_DIR || __dirname;
   const py = path.join(APP_DIR, 'preflight.py');
   try {
     const out = execSync(`python3 "${py}" "${p}" 2>&1`, { encoding: 'utf8' });
@@ -93,7 +95,7 @@ for (const refPath of refPaths) {
     console.error(`[multi-ref] SKIP ${refPath}: not found`);
     continue;
   }
-  const pf = runPreflight(refPath);
+  const pf = skipPreflight ? { blocked: false } : runPreflight(refPath);
   if (pf.blocked) {
     console.error(`[multi-ref] SKIP ${refPath}: ${pf.reason} — not sent to Vision`);
     continue;
@@ -170,7 +172,7 @@ function tokensMatch(v1, v2, tolerance = 0.1) {
 }
 
 function sameCompClass(specs) {
-  const classes = specs.map(s => s.layout?.compositionClass).filter(Boolean);
+  const classes = specs.map(s => s.compositionClass || s.layout?.compositionClass).filter(Boolean);
   return classes.every(c => c === classes[0]) ? classes[0] : null;
 }
 
@@ -295,6 +297,20 @@ function buildVariant(variantIdx, unifiedSpec) {
         v.typography[lvl][field] = val;
       }
     }
+  }
+
+  // Copy top-level fields from unified spec or first ref spec
+  v.compositionClass = unifiedSpec.compositionClass || 'mixed';
+  v.backgroundDescription = unifiedSpec.backgroundDescription || (specs[0]?.backgroundDescription || '');
+  v.decorativeElements = unifiedSpec.decorativeElements || (specs[0]?.decorativeElements || []);
+
+  // Build backgroundPrompt from backgroundDescription
+  if (v.backgroundDescription && !v.backgroundDescription.match(/solid|gradient|plain/i)) {
+    const palette = v.palette || {};
+    const accent = palette.accent?.value || '#C9A86A';
+    const primary = palette.primary?.value || '#8B1E2D';
+    const bg = palette.background?.value || '#1a1a1a';
+    v.backgroundPrompt = `Editorial art-deco style background: ${v.backgroundDescription}. Style: luxury editorial, dark moody atmosphere, ${accent} gold accents. Palette: background ${bg}, accent ${accent}, primary ${primary}. Vertical 1080x1350. No text.`;
   }
 
   // Components: pick zone per variant
