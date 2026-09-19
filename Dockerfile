@@ -55,6 +55,7 @@ COPY editorial-renderer.js /app/editorial-renderer.js
 COPY content-auditor.js /app/content-auditor.js
 COPY design-by-reference-preview.js /app/design-by-reference-preview.js
 COPY design-spec.schema.json /app/design-spec.schema.json
+COPY write-design-spec.js /app/write-design-spec.js
 COPY components/ /app/components/
 
 # ─── Node dependencies ──────────────────────────────────────────────────────
