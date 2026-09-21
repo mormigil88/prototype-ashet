@@ -81,6 +81,7 @@ COPY preserve_person.py /app/preserve_person.py
 COPY segment_face.py /app/segment_face.py
 COPY preserve_face.py /app/preserve_face.py
 COPY edit_image_runway.js /app/edit_image_runway.js
+COPY edit_identity_runway.js /app/edit_identity_runway.js
 COPY generate_image.js /app/generate_image.js
 COPY generate_video.js /app/generate_video.js
 COPY compose_video.js /app/compose_video.js
