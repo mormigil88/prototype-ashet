@@ -8,7 +8,7 @@
  *   verify(objectKey) → { reachable: true, size } | { reachable: false, reason }
  *
  * Object key format:
- *   clients/<client_slug>/<provider>/<YYYY-MM>/<provider_job_id>.mp4
+ *   clients/<client_slug>/<provider>/<YYYY-MM>/<provider_job_id>.<mp4|mp3>
  *   Falls back to SHA-256 of file content when provider_job_id is absent.
  *
  * Deduplication: HeadObject is called before PutObject.
@@ -60,14 +60,15 @@ function sha256File(filePath) {
 
 /**
  * Build a deterministic R2 object key.
- * Format: clients/<client_slug>/<provider>/<YYYY-MM>/<id>.mp4
+ * Format: clients/<client_slug>/<provider>/<YYYY-MM>/<id>.<mp4|mp3>
  * id = provider_job_id if provided, else SHA-256 of file.
  */
-function buildObjectKey(filePath, { clientSlug, provider, providerJobId, sha256 }) {
+function buildObjectKey(filePath, { clientSlug, provider, providerJobId, sha256, contentType }) {
   const id = providerJobId || sha256;
   const month = new Date().toISOString().slice(0, 7); // YYYY-MM
   const safeId = id.replace(/[^A-Za-z0-9._-]/g, '_');
-  return `clients/${clientSlug || '_unknown'}/${provider || '_unknown'}/${month}/${safeId}.mp4`;
+  const extension = contentType === 'audio/mpeg' ? '.mp3' : '.mp4';
+  return `clients/${clientSlug || '_unknown'}/${provider || '_unknown'}/${month}/${safeId}${extension}`;
 }
 
 /**
@@ -233,4 +234,4 @@ async function verify(objectKey) {
   }
 }
 
-module.exports = { archive, verify, setS3ClientFactory };
+module.exports = { archive, verify, setS3ClientFactory, buildObjectKey };

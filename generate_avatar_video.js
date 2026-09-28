@@ -18,7 +18,13 @@
  *
  * CLI:
  *   node generate_avatar_video.js "<текст>" [story|square|landscape] [--avatar alias]
+ *   node generate_avatar_video.js --voice-only "<текст>" [story|square|landscape] [--avatar alias]
  *   node generate_avatar_video.js --avatars          # показать доступные аватары
+ *
+ * Опция --voice-only:
+ *   HeyGen генерирует видео (MP4) как промежуточный файл.
+ *   Аудио-дорожка извлекается через ffmpeg в MP3.
+ *   MP3 возвращается вызывающему боту. MP4 в чат не попадает, но архивируется в R2.
  */
 
 const fs   = require('fs');
@@ -62,13 +68,15 @@ function failHeyGen(err) {
 // ─── CLI-парсинг ──────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const result = { script: null, ratio: RATIOS.story, avatarAlias: null };
+  const result = { script: null, ratio: RATIOS.story, avatarAlias: null, voiceOnly: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--avatar' && i + 1 < argv.length) {
       result.avatarAlias = argv[++i];
     } else if (a === '--avatars') {
       result.listAvatars = true;
+    } else if (a === '--voice-only') {
+      result.voiceOnly = true;
     } else if (!result.script) {
       result.script = a;
     } else if (RATIOS[a]) {
@@ -191,6 +199,60 @@ async function pollVideo(videoId) {
   }
 }
 
+// ─── Audio extraction (ffmpeg) ─────────────────────────────────────────────────
+
+const { execFileSync } = require('child_process');
+
+/**
+ * Извлекает аудио-дорожку из MP4 в MP3.
+ * @param {string} mp4Path
+ * @returns {string} путь к MP3
+ */
+function extractAudioToMp3(mp4Path, run = execFileSync) {
+  const mp3Path = mp4Path.replace(/\.mp4$/, '.mp3');
+  try {
+    run('ffmpeg', [
+      '-y',                    // перезаписать без вопроса
+      '-i', mp4Path,
+      '-vn',                   // без видео
+      '-ac', '1',              // моно
+      '-ar', '44100',          // стандартный sample rate
+      '-b:a', '192k',          // качество
+      mp3Path,
+    ], { stdio: 'pipe' });
+  } catch (e) {
+    fail('ffmpeg не смог извлечь аудио из MP4: ' + e.message);
+  }
+  return mp3Path;
+}
+
+async function finishMedia(mp4Path, args, videoId, archiveFn = archive, extractFn = extractAudioToMp3) {
+  // Извлекаем звук до архивации: сбой R2 не должен лишать Иру готового MP3.
+  const mp3Path = args.voiceOnly ? extractFn(mp4Path) : null;
+  const metadata = {
+    provider: 'heygen',
+    providerJobId: videoId,
+    clientSlug: process.env.CLIENT_SLUG || 'ashet-irina',
+    sourceUrl: null,
+    script: args.script,
+    aspectRatio: args.ratio,
+  };
+
+  const videoArchive = await archiveFn(mp4Path, { ...metadata, contentType: 'video/mp4' });
+  if (!videoArchive.ok || videoArchive.status !== 'done') {
+    console.error(`Video archive failed: ${videoArchive.reason}`);
+    if (!args.voiceOnly) fail('R2 archive error');
+  }
+
+  if (!args.voiceOnly) return mp4Path;
+
+  const audioArchive = await archiveFn(mp3Path, { ...metadata, contentType: 'audio/mpeg' });
+  if (!audioArchive.ok || audioArchive.status !== 'done') {
+    console.error(`Audio archive failed: ${audioArchive.reason}`);
+  }
+  return mp3Path;
+}
+
 // ─── main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -228,7 +290,7 @@ async function main() {
   }
 
   if (!args.script) {
-    fail('Использование: node generate_avatar_video.js "<текст сценария>" [story|square|landscape] [--avatar алиас]');
+    fail('Использование: node generate_avatar_video.js "<текст сценария>" [story|square|landscape] [--avatar алиас]\n       node generate_avatar_video.js --voice-only "<текст>" [story|square|landscape] [--avatar алиас]');
   }
 
   // Выбираем аватар через реестр (с preflight)
@@ -252,28 +314,17 @@ async function main() {
 
   console.error(`[HeyGen] Задача отправлена, video id: ${videoId}`);
 
-  const outputPath = await pollVideo(videoId);
+  const mp4Path = await pollVideo(videoId);
 
-  // Архивируем в R2
-  const ar = await archive(outputPath, {
-    provider:        'heygen',
-    providerJobId:   videoId,
-    clientSlug:      process.env.CLIENT_SLUG || 'ashet-irina',
-    sourceUrl:       null,
-    script:          args.script,
-    aspectRatio:     args.ratio,
-    contentType:     'video/mp4',
-  });
-  if (!ar.ok || ar.status !== 'done') {
-    console.error(`Archive failed: ${ar.reason} (videoId=${videoId})`);
-    fail('R2 archive error');
-  }
-
-  console.log(outputPath);
+  console.log(await finishMedia(mp4Path, args, videoId));
 }
 
-main().catch(e => {
-  if (e instanceof HeyGenFail) failHeyGen(e);
-  console.error('Непредвиденная ошибка:', e.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(e => {
+    if (e instanceof HeyGenFail) failHeyGen(e);
+    console.error('Непредвиденная ошибка:', e.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { parseArgs, extractAudioToMp3, finishMedia };
