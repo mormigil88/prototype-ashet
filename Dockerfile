@@ -91,7 +91,11 @@ COPY subtitle_helpers.js /app/subtitle_helpers.js
 COPY burn_translated_subtitles.js /app/burn_translated_subtitles.js
 COPY prepare_translated_subtitles.js /app/prepare_translated_subtitles.js
 COPY generate_avatar_video.js /app/generate_avatar_video.js
+COPY generate_tts_audio.js /app/generate_tts_audio.js
+COPY compose_voiceover.js /app/compose_voiceover.js
 COPY tests/generate_avatar_video.test.js /app/tests/generate_avatar_video.test.js
+COPY tests/generate_tts_audio.test.js /app/tests/generate_tts_audio.test.js
+COPY tests/compose_voiceover.test.js /app/tests/compose_voiceover.test.js
 COPY media_archive.js /app/media_archive.js
 COPY clone_voice.js /app/clone_voice.js
 COPY create_avatar.js /app/create_avatar.js
