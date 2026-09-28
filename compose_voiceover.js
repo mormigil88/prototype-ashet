@@ -1,256 +1,140 @@
 #!/usr/bin/env node
-/**
- * compose_voiceover.js — собирает 9:16 MP4 из фото/видео и озвучки.
- *
- * Каждый файл медиа показывается равное время, распределённое по длительности
- * озвучки. Для видео берётся указанный (или последний) кадр как статичное
- * изображение — исходный звук НЕ используется, чтобы не заглушать речь.
- *
- * CLI:
- *   node compose_voiceover.js <аудио.mp3> <выход.mp4> <файл1.jpg> [файл2.jpg ...]
- *   node compose_voiceover.js <аудио.mp3> <выход.mp4> --photos <f1> <f2>
- *   node compose_voiceover.js <аудио.mp3> <выход.mp4> --video <видео.mp4> [--from-end]
- *
- * Опции:
- *   --photos        — все последующие файлы трактуются как фото
- *   --video <file>  — одно видео; из него берётся первый кадр (без звука)
- *   --from-end      — для видео: брать кадр не с начала, а с конца (последний кадр)
- *
- * ffmpeg: 9:16 (1080x1920), видео-кодек libx264, аудио aac 192k, mp4.
- */
+/** Assemble a vertical reel from narration and photos or moving video clips. */
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync, execFileSync } = require('node:child_process');
 
-const fs   = require('fs');
-const os   = require('os');
-const path = require('path');
-const { execFileSync, spawnSync } = require('child_process');
+const WIDTH = 1080;
+const HEIGHT = 1920;
+const FPS = 30;
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv']);
 
-const W = 1080, H = 1920;
-
-// ─── Ошибки ───────────────────────────────────────────────────────────────────
-
-function fail(msg) {
-  console.error(msg);
+function fail(message) {
+  console.error(message);
   process.exit(1);
 }
 
-// ─── ffprobe helpers ─────────────────────────────────────────────────────────
-
-function getDuration(filePath) {
-  const r = spawnSync('ffprobe', [
-    '-v', 'error', '-show_entries', 'format=duration',
-    '-of', 'csv=p=0', filePath,
-  ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-  const v = parseFloat(r.stdout.trim());
-  return isNaN(v) ? 0 : v;
-}
-
-function hasAudioStream(filePath) {
-  const r = spawnSync('ffprobe', [
-    '-v', 'error', '-show_entries', 'stream=codec_type',
+function probe(filePath) {
+  const result = spawnSync('ffprobe', [
+    '-v', 'error', '-show_entries', 'format=duration:stream=codec_type',
     '-of', 'json', filePath,
-  ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  ], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+  if (result.error || result.status !== 0) return { duration: 0, streams: [] };
   try {
-    const data = JSON.parse(r.stdout);
-    return data.streams?.some(s => s.codec_type === 'audio') ?? false;
-  } catch { return false; }
+    const data = JSON.parse(result.stdout);
+    return { duration: Number(data.format?.duration) || 0, streams: data.streams || [] };
+  } catch {
+    return { duration: 0, streams: [] };
+  }
 }
 
-// ─── Подготовка каждого сегмента ─────────────────────────────────────────────
-
-const TMP_DIR = os.tmpdir();
-
-/**
- * Конвертирует файл в "картинку для слайда" — 9:16 PNG в TMP.
- * Для фото — масштабирует и паддит. Для видео — извлекает 1 кадр.
- * @param {string} srcPath
- * @param {number} durationSec  — длительность этого сегмента
- * @param {boolean} fromEnd     — для видео: кадр с конца?
- * @returns {string} путь к PNG-файлу сегмента
- */
-function prepareSlideImage(srcPath, durationSec, fromEnd = false) {
-  const streams = getStreams(srcPath);
-  const isVideo = streams.some(s => s.codec_type === 'video') && getDuration(srcPath) > 0.5;
-
-  const outPng = path.join(TMP_DIR, `slide_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.png`);
-
-  const fps = Math.max(1, Math.round(durationSec * 25)); // ≥1fps, но не слишком много
-
-  let args;
-  if (isVideo) {
-    if (fromEnd) {
-      // Seek к концу файла
-      args = ['-sseof', '-0.1', '-i', srcPath, '-update', '1', '-q:v', '2', outPng];
+function parseArgs(argv) {
+  const [audioPath, outputPath, ...rest] = argv;
+  const mediaFiles = [];
+  let fromEnd = false;
+  for (let i = 0; i < rest.length; i++) {
+    const token = rest[i];
+    if (token === '--photos') continue;
+    if (token === '--video') {
+      if (!rest[i + 1]) throw new Error('После --video укажите видеофайл');
+      mediaFiles.push(rest[++i]);
+    } else if (token === '--from-end') {
+      fromEnd = true;
+    } else if (token.startsWith('--')) {
+      throw new Error(`Неизвестная опция: ${token}`);
     } else {
-      // Первый кадр
-      args = ['-i', srcPath, '-vf', `select=eq(n\,0),scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1`, '-vsync', '0', '-frames:v', '1', '-q:v', '2', '-y', outPng];
+      mediaFiles.push(token);
     }
-  } else {
-    // Фото
-    args = ['-i', srcPath, '-vf', `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${fps}`, '-q:v', '2', '-y', outPng];
   }
-
-  try {
-    execFileSync('ffmpeg', args, { stdio: 'pipe' });
-  } catch (e) {
-    const err = e.stderr ? e.stderr.toString().slice(-500) : String(e);
-    fail('ffmpeg не смог подготовить слайд из ' + srcPath + ': ' + err);
-  }
-
-  if (!fs.existsSync(outPng)) fail('Слайд не создан: ' + outPng);
-  return outPng;
+  return { audioPath, outputPath, mediaFiles, fromEnd };
 }
 
-/** Аудит медиа-потоков */
-function getStreams(filePath) {
-  const r = spawnSync('ffprobe', [
-    '-v', 'error', '-show_entries', 'stream=index,codec_type',
-    '-of', 'json', filePath,
-  ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-  try { return JSON.parse(r.stdout).streams ?? []; }
-  catch { return []; }
+function buildFfmpegArgs(audioPath, outputPath, mediaFiles, audioDuration, mediaInfo, fromEnd = false) {
+  const totalFrames = Math.ceil(audioDuration * FPS);
+  if (mediaFiles.length > totalFrames) {
+    throw new Error('Слишком много медиафайлов для длительности озвучки');
+  }
+  const baseFrames = Math.floor(totalFrames / mediaFiles.length);
+  const extraFrames = totalFrames % mediaFiles.length;
+  const args = ['-hide_banner', '-loglevel', 'error'];
+  const filters = [];
+  for (let i = 0; i < mediaFiles.length; i++) {
+    const info = mediaInfo[i];
+    const last = i === mediaFiles.length - 1;
+    const frames = baseFrames + (i < extraFrames ? 1 : 0);
+    const segmentDuration = frames / FPS;
+    if (info.isVideo) {
+      if (fromEnd && last && info.duration > segmentDuration) {
+        args.push('-ss', String(info.duration - segmentDuration));
+      }
+      args.push('-i', mediaFiles[i]);
+    } else {
+      args.push('-loop', '1', '-framerate', String(FPS), '-i', mediaFiles[i]);
+    }
+    filters.push(
+      `[${i}:v]fps=${FPS},scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease,` +
+      `pad=${WIDTH}:${HEIGHT}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p,` +
+      `tpad=stop_mode=clone:stop_duration=${segmentDuration + 0.2},` +
+      `trim=end_frame=${frames},setpts=PTS-STARTPTS[v${i}]`
+    );
+  }
+  args.push('-i', audioPath);
+  filters.push(mediaFiles.map((_, i) => `[v${i}]`).join('') +
+    `concat=n=${mediaFiles.length}:v=1:a=0[vout]`);
+  args.push(
+    '-filter_complex', filters.join(';'),
+    '-map', '[vout]', '-map', `${mediaFiles.length}:a:0`,
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '192k',
+    '-t', String(audioDuration), '-movflags', '+faststart', '-y', outputPath,
+  );
+  return args;
 }
-
-// ─── main ─────────────────────────────────────────────────────────────────────
 
 function main() {
   const argv = process.argv.slice(2);
-
-  // Быстрый --help
   if (argv.includes('--help') || argv.includes('-h')) {
-    console.log(`Использование:
-  node compose_voiceover.js <аудио.mp3> <выход.mp4> <файл1.jpg> [файл2.jpg ...]
-  node compose_voiceover.js <аудио.mp3> <выход.mp4> --photos <f1> <f2>
-  node compose_voiceover.js <аудио.mp3> <выход.mp4> --video <видео.mp4> [--from-end]
-  node compose_voiceover.js <аудио.mp3> <выход.mp4> --video <видео.mp4> --duration <сек>`);
+    console.log('Использование: node compose_voiceover.js <аудио.mp3> <выход.mp4> <фото/видео> [ещё медиа...] [--from-end]');
     return;
   }
-
-  let audioPath = null, outputPath = null, mediaFiles = [];
-  let fromEnd = false;
-
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--photos') {
-      i++;
-      while (i < argv.length && !argv[i].startsWith('--')) mediaFiles.push(argv[i++]);
-      i--;
-    } else if (a === '--video') {
-      mediaFiles.push(argv[++i]);
-    } else if (a === '--from-end') {
-      fromEnd = true;
-    } else if (!audioPath) {
-      audioPath = a;
-    } else if (!outputPath) {
-      outputPath = a;
-    } else {
-      mediaFiles.push(a);
-    }
-  }
-
-  if (!audioPath || !outputPath) {
-    fail('Использование: node compose_voiceover.js <аудио.mp3> <выход.mp4> <файл1.jpg> [файл2.jpg...]');
-  }
+  let input;
+  try { input = parseArgs(argv); } catch (error) { fail(error.message); }
+  const { audioPath, outputPath, mediaFiles, fromEnd } = input;
+  if (!audioPath || !outputPath) fail('Укажите MP3 и путь к выходному MP4');
   if (!fs.existsSync(audioPath)) fail('Аудиофайл не найден: ' + audioPath);
-  if (mediaFiles.length === 0) fail('Нет медиа-файлов');
-
-  for (const f of mediaFiles) {
-    if (!fs.existsSync(f)) fail('Медиа-файл не найден: ' + f);
+  if (!mediaFiles.length) fail('Нет медиа-файлов');
+  for (const file of mediaFiles) {
+    if (!fs.existsSync(file)) fail('Медиа-файл не найден: ' + file);
   }
 
-  const audioDuration = getDuration(audioPath);
-  if (audioDuration < 0.5) fail('Аудио слишком короткое или нечитаемое');
-
-  // Проверяем ffmpeg
-  try { execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' }); }
-  catch { fail('ffmpeg не найден'); }
-
-  console.error(`[compose_voiceover] Аудио: ${audioDuration.toFixed(1)} сек., медиа: ${mediaFiles.length} файл(ов)`);
-
-  // Подготовка слайдов
-  const segmentDuration = audioDuration / mediaFiles.length;
-  const slideFiles = [];
-
-  for (let i = 0; i < mediaFiles.length; i++) {
-    const isLast = (i === mediaFiles.length - 1) && mediaFiles.length > 1;
-    const segDur = isLast
-      ? audioDuration - segmentDuration * (mediaFiles.length - 1) // последний забирает остаток
-      : segmentDuration;
-    const frameFromEnd = fromEnd && (i === mediaFiles.length - 1);
-    const slide = prepareSlideImage(mediaFiles[i], segDur, frameFromEnd);
-    slideFiles.push(slide);
-    console.error(`[compose_voiceover] Слайд ${i + 1}/${mediaFiles.length}: ${path.basename(mediaFiles[i])} → ${segDur.toFixed(1)} сек.`);
+  const audio = probe(audioPath);
+  if (audio.duration < 0.5 || !audio.streams.some(s => s.codec_type === 'audio')) {
+    fail('Аудио слишком короткое или нечитаемое');
   }
+  const mediaInfo = mediaFiles.map(file => {
+    const info = probe(file);
+    if (!info.streams.some(s => s.codec_type === 'video')) fail('Нет изображения в файле: ' + file);
+    return { duration: info.duration, isVideo: VIDEO_EXTENSIONS.has(path.extname(file).toLowerCase()) };
+  });
 
-  // Собираем каждый слайд в видео-сегмент с нужной длительностью
-  const segPaths = [];
-  for (let i = 0; i < slideFiles.length; i++) {
-    const dur = (i === slideFiles.length - 1 && slideFiles.length > 1)
-      ? audioDuration - segmentDuration * (slideFiles.length - 1)
-      : segmentDuration;
-    const segOut = path.join(TMP_DIR, `seg_${Date.now()}_${i}.mp4`);
-
-    try {
-      execFileSync('ffmpeg', [
-        '-loop', '1', '-i', slideFiles[i],
-        '-t', String(dur),
-        '-vf', `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30`,
-        '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-        '-x264-params', 'nal-hrd=cbr',
-        '-b:v', '2500k', '-maxrate', '2500k', '-bufsize', '5000k',
-        '-y', segOut,
-      ], { stdio: 'pipe' });
-    } catch (e) {
-      const err = e.stderr ? e.stderr.toString().slice(-500) : String(e);
-      // Чистим
-      slideFiles.forEach(f => { try { fs.unlinkSync(f); } catch {} });
-      fail('ffmpeg segment error: ' + err);
-    }
-    segPaths.push(segOut);
-  }
-
-  // Склейка сегментов
-  const concatList = path.join(TMP_DIR, `concat_${Date.now()}.txt`);
-  const concatContent = segPaths.map(p => "file '" + p + "'").join('\n');
-  fs.writeFileSync(concatList, concatContent, 'utf8');
-
-  const videoOnlyOut = path.join(TMP_DIR, `vo_${Date.now()}.mp4`);
+  let args;
   try {
-    execFileSync('ffmpeg', [
-      '-f', 'concat', '-safe', '0', '-i', concatList,
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-      '-y', videoOnlyOut,
-    ], { stdio: 'pipe' });
-  } catch (e) {
-    const err = e.stderr ? e.stderr.toString().slice(-500) : String(e);
-    fail('ffmpeg concat error: ' + err);
-  }
-
-  // Наложение озвучки
+    args = buildFfmpegArgs(audioPath, outputPath, mediaFiles, audio.duration, mediaInfo, fromEnd);
+  } catch (error) { fail(error.message); }
   try {
-    execFileSync('ffmpeg', [
-      '-i', videoOnlyOut, '-i', audioPath,
-      '-c:v', 'copy',
-      '-c:a', 'aac', '-b:a', '192k',
-      '-shortest',
-      '-movflags', '+faststart',
-      '-y', outputPath,
-    ], { stdio: 'pipe' });
-  } catch (e) {
-    const err = e.stderr ? e.stderr.toString().slice(-500) : String(e);
-    fail('ffmpeg mux error: ' + err);
+    execFileSync('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 4 * 1024 * 1024 });
+  } catch (error) {
+    fail('Ошибка монтажа ffmpeg: ' + (error.stderr?.toString().slice(-1000) || error.message));
   }
 
-  // Чистим TMP-файлы
-  try { fs.unlinkSync(concatList); } catch {}
-  try { fs.unlinkSync(videoOnlyOut); } catch {}
-  slideFiles.forEach(f => { try { fs.unlinkSync(f); } catch {} });
-  segPaths.forEach(f => { try { fs.unlinkSync(f); } catch {} });
-
-  if (!fs.existsSync(outputPath)) fail('Результат не создан: ' + outputPath);
-
-  const outDuration = getDuration(outputPath);
-  console.error(`[compose_voiceover] Готово: ${outputPath} (${outDuration.toFixed(1)} сек.)`);
+  const output = probe(outputPath);
+  if (!output.streams.some(s => s.codec_type === 'video') ||
+      !output.streams.some(s => s.codec_type === 'audio') ||
+      output.duration + 0.15 < audio.duration) {
+    fail('Итоговый MP4 не содержит полного видеоряда и озвучки');
+  }
   console.log(outputPath);
 }
 
-main();
+if (require.main === module) main();
+module.exports = { parseArgs, buildFfmpegArgs };
