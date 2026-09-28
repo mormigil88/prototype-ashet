@@ -155,6 +155,13 @@ async function publishViaToto(mediaItems) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { fail(`gateway: HTTP ${res.status}, ответ не JSON: ${text.slice(0, 200)}`); }
+  if (res.status === 409 && data.code === 'POSSIBLE_DUPLICATE') {
+    const prior = data.previous || {};
+    const instagram = prior.result && prior.result.instagram || {};
+    fail(`Toto: похожая карусель уже отправлялась; новую заявку не создали. ` +
+      `Прежний статус: ${instagram.status || prior.state || 'неизвестен'}; ` +
+      `Publer job ID: ${instagram.publer_job_id || 'неизвестен'}. Проверь прежнюю заявку, не повторяй автоматически.`);
+  }
   if (!res.ok || !data.ok) {
     // auto_publish_disabled и другие отказы гейта — не выдумываем статус.
     fail(`Toto: HTTP ${res.status} ${JSON.stringify(data).slice(0, 400)}`);
